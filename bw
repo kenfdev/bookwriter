@@ -1,0 +1,21 @@
+#!/bin/zsh
+set -euo pipefail
+
+source=${0:A}
+ROOT=${source:h}
+
+if [[ $# -ne 1 ]]; then
+  print -u2 "usage: bw <directory>"
+  exit 64
+fi
+if [[ ! -d $1 ]]; then
+  print -u2 "bw: not a directory: $1"
+  exit 1
+fi
+
+BOOK=$(cd -- $1 && pwd)
+cd $ROOT
+npm run build
+export CARGO_TARGET_DIR=$ROOT/src-tauri/target-bw
+cargo build --manifest-path src-tauri/Cargo.toml --features custom-protocol
+exec $CARGO_TARGET_DIR/debug/bookwriter $BOOK

@@ -1,0 +1,8 @@
+node_modules/
+spec-book/
+dist/
+src-tauri/target/
+src-tauri/target-bw/
+src-tauri/gen/
+.DS_Store
+*.log

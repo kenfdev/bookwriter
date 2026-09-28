@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bookwriter</title>
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <input id="book-title" class="book-title" aria-label="Book title" spellcheck="false" />
+        <span id="save-state" class="save-state"></span>
+        <div class="toolbar">
+          <button id="btn-open" type="button">Open</button>
+          <button id="btn-new-section" type="button">Text</button>
+          <button id="btn-new-group" type="button">Folder</button>
+          <button id="btn-delete" type="button">Delete</button>
+          <button id="btn-preview" type="button" aria-pressed="true">Preview</button>
+          <button id="btn-palette" type="button">Commands</button>
+          <button id="btn-reminder" type="button">Markup</button>
+          <button id="btn-export" type="button">Export</button>
+        </div>
+      </header>
+      <div id="warnings" class="warnings" hidden></div>
+      <div class="workspace">
+        <aside class="outline-column">
+          <div id="outline" class="outline"></div>
+          <form id="inspector" class="inspector" hidden>
+            <label>Title <input id="field-title" type="text" /></label>
+            <label>Synopsis <textarea id="field-synopsis" rows="3"></textarea></label>
+            <label>Status
+              <select id="field-status">
+                <option>idea</option>
+                <option>draft</option>
+                <option>revise</option>
+                <option>done</option>
+              </select>
+            </label>
+            <label>Role
+              <select id="field-role">
+                <option>body</option>
+                <option>front</option>
+              </select>
+            </label>
+            <p id="field-id" class="node-id"></p>
+            <button id="btn-edit-prose" type="button" hidden>Edit this text</button>
+            <button id="btn-read" type="button" hidden>Read the group</button>
+          </form>
+        </aside>
+        <main id="stage" class="stage">
+          <div id="editor-host" class="editor-host"></div>
+          <article id="reading" class="reading" hidden></article>
+        </main>
+        <aside id="preview" class="preview"></aside>
+      </div>
+    </div>
+
+    <div id="palette" class="palette" hidden>
+      <input id="palette-input" type="text" placeholder="Command" aria-label="Command palette" />
+      <ul id="palette-list"></ul>
+    </div>
+
+    <div id="reminder" class="reminder" hidden>
+      <div class="reminder-card">
+        <header>
+          <h2>Markup</h2>
+          <button id="reminder-close" type="button">Close</button>
+        </header>
+        <table>
+          <thead><tr><th>Command</th><th>What it inserts</th></tr></thead>
+          <tbody id="reminder-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="context-menu" class="context-menu" hidden></div>
+    <dialog id="create-dialog" closedby="any">
+      <form method="dialog">
+        <p id="create-label"></p>
+        <input id="create-title" type="text" required />
+        <div class="dialog-actions">
+          <button value="cancel" type="submit" formnovalidate>Cancel</button>
+          <button value="ok" type="submit">Create</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

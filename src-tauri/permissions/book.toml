@@ -1,0 +1,11 @@
+[[permission]]
+identifier = "book-access"
+description = "Read and write the open book folder."
+commands.allow = [
+  "read_text",
+  "write_text",
+  "read_dir",
+  "rename_path",
+  "make_dir",
+  "startup_book_path",
+]
