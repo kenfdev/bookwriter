@@ -27,7 +27,7 @@ function node(
 
 const book = [
   node("section", { id: "preface", title: "Preface", role: "front" }, "The preface body.\n"),
-  node("group", { id: "one", title: "Chapter One" }, "Opener with *emphasis* and `code`.\n", [
+  node("group", { id: "one", title: "Chapter One", unit: "chapter" }, "Opener with *emphasis* and `code`.\n", [
     node("section", { id: "inward", title: "Inward" }, "Text.[^1]\n\n- first\n- second\n\n```ts\nconst a = (1);\n```\n\n[^1]: A note.\n"),
   ]),
   node("section", { id: "trash", title: "Trash" }, "Never exported.\n"),
@@ -38,8 +38,8 @@ describe("pdf export", () => {
     const result = exportPdf(book, "My Book");
     expect(result.pdf.startsWith("%PDF-1.4\n")).toBe(true);
     expect(result.pdf.trimEnd().endsWith("%%EOF")).toBe(true);
-    expect(result.pages).toBe(1);
-    expect(result.pdf).toContain("/Count 1");
+    expect(result.pages).toBe(2);
+    expect(result.pdf).toContain("/Count 2");
     expect(result.pdf).toContain("(My Book)");
     const startxref = Number(/startxref\n(\d+)\n/.exec(result.pdf)![1]);
     expect(result.pdf.slice(startxref, startxref + 4)).toBe("xref");
@@ -51,6 +51,36 @@ describe("pdf export", () => {
     });
   });
 
+  it("draws a directory tree and a dash rule instead of question marks", () => {
+    const result = markdownToPdf(
+      ["```", "HTW/", "  ├── .gitignore", "  │   └── Cave.java", "  └ missing", "────────", "```", ""].join("\n"),
+    );
+    expect(result.pdf).toContain("HTW/");
+    expect(result.pdf).toContain("|-- .gitignore");
+    expect(result.pdf).toContain("|   `-- Cave.java");
+    expect(result.pdf).toContain("` missing");
+    expect(result.pdf).toContain("--------");
+    expect(result.pdf).not.toContain("?");
+    expect(result.warnings.some((warning) => warning.includes("cannot be shown"))).toBe(false);
+  });
+
+  it("draws pi, a raised six, and the transcript marks", () => {
+    const prose = markdownToPdf("the digit of \u03c0 is in 10\u00b9\u2076.\n");
+    expect(prose.pdf).toContain("/Symbol");
+    expect(prose.pdf).toContain("/F6");
+    expect(prose.pdf).toContain("(6)");
+    expect(prose.pdf).toMatch(/Ts \(6\) Tj/);
+    expect(prose.warnings.some((warning) => warning.includes("cannot be shown"))).toBe(false);
+
+    const code = markdownToPdf(["```", "\u276f ask", "\u23fa answer", "  \u23bf  Done", "(1\u2212cov)", "```", ""].join("\n"));
+    expect(code.pdf).toContain("\\233 ask");
+    expect(code.pdf).toContain("\\225 answer");
+    expect(code.pdf).toContain("`  Done");
+    expect(code.pdf).toContain("1-cov");
+    expect(code.pdf).not.toContain("?");
+    expect(code.warnings.some((warning) => warning.includes("cannot be shown"))).toBe(false);
+  });
+
   it("is plain ASCII so the text writer can save it", () => {
     const result = markdownToPdf("Caf\u00e9 \u2014 \u201cquoted\u201d \u4e2d\n");
     expect(/^[\x00-\x7f]*$/.test(result.pdf)).toBe(true);
@@ -58,9 +88,60 @@ describe("pdf export", () => {
     expect(result.warnings.some((warning) => warning.includes("cannot be shown"))).toBe(true);
   });
 
+  it("starts each folder on a new page and leaves a section where it falls", () => {
+    const nested = node("group", { id: "nested", title: "Nested" }, "Inside the folder.\n");
+    const kept = node("section", { id: "kept", title: "Kept" }, "Stays with the folder.\n");
+    const folder = node("group", { id: "folder", title: "Folder" }, "Opener.\n", [kept, nested]);
+    const another = node("group", { id: "another", title: "Another" }, "Next folder.\n");
+    const opening = exportPdf([folder]);
+    expect(opening.pages).toBe(2);
+    expect(opening.pdf).not.toContain("page-break");
+    expect(opening.pdf).not.toContain("chapter-number");
+    const followed = exportPdf([
+      node("section", { id: "loose", title: "Loose" }, "Before the folders.\n"),
+      folder,
+      another,
+    ]);
+    expect(followed.pages).toBe(4);
+  });
+
+  it("keeps a chapter with its title when the previous page is nearly full", () => {
+    const filler = "Hello.\n\n".repeat(24);
+    const chapter = markdownToPdf(
+      `${filler}<p class="chapter-number">Chapter 1</p>\n\n# The Title\n\nThe chapter body.\n`,
+    );
+    const chapterPage = pageOf(chapter.pdf, "Chapter 1");
+    expect(chapterPage).toBe(pageOf(chapter.pdf, "The Title"));
+    expect(chapterPage).toBe(pageOf(chapter.pdf, "The chapter body."));
+    expect(firstText(chapter.pdf, chapterPage)).toBe("Chapter 1");
+
+    const heading = markdownToPdf(`${filler}## The Future\n\n### Where next\n\nIt continues.\n`);
+    const headingPage = pageOf(heading.pdf, "The Future");
+    expect(headingPage).toBe(pageOf(heading.pdf, "Where next"));
+    expect(headingPage).toBe(pageOf(heading.pdf, "It continues."));
+    expect(firstText(heading.pdf, headingPage)).toBe("The Future");
+
+    const part = markdownToPdf(
+      `${filler}<p class="chapter-number">Part 1</p>\n\n# The Part\n\nThe part body.\n`,
+    );
+    const partPage = pageOf(part.pdf, "Part 1");
+    expect(partPage).toBe(pageOf(part.pdf, "The Part"));
+    expect(partPage).toBe(pageOf(part.pdf, "The part body."));
+    expect(firstText(part.pdf, partPage)).toBe("Part 1");
+  });
+
+  it("starts a new page where the page break is set", () => {
+    const scene = node("section", { id: "scene", title: "Scene", break: true }, "On its own page.\n");
+    const folder = node("group", { id: "folder", title: "Folder", break: false }, "Same page.\n", [scene]);
+    const followed = exportPdf([node("section", { id: "loose", title: "Loose" }, "Before.\n"), folder]);
+    expect(followed.pages).toBe(2);
+    const opening = exportPdf([node("section", { id: "scene", title: "Scene", break: true }, "Opens the book.\n")]);
+    expect(opening.pages).toBe(1);
+  });
+
   it("contains the book text and the notes but not the trash", () => {
     const { pdf } = exportPdf(book);
-    for (const text of ["Preface", "Chapter One", "Inward", "The preface body.", "const a = \\(1\\);", "A note.", "first"]) {
+    for (const text of ["Preface", "Chapter 1", "Chapter One", "Inward", "The preface body.", "const a = \\(1\\);", "A note.", "first"]) {
       expect(pdf).toContain(text);
     }
     expect(pdf).not.toContain("Never exported");
@@ -107,6 +188,31 @@ describe("pdf export", () => {
 
 function unescapePdf(text: string): string {
   return text.replace(/\\([0-7]{3}|.)/g, (_, code: string) => (code.length === 3 ? String.fromCharCode(parseInt(code, 8)) : code));
+}
+
+/** Page number (from 1) of the first text run equal to `text`, ignoring the footer. */
+function pageOf(pdf: string, text: string): number {
+  const pages = [...pdf.matchAll(/stream\n([\s\S]*?)endstream/g)].map((match) => match[1]);
+  for (let i = 0; i < pages.length; i++) {
+    if (pageTexts(pages[i]).includes(text)) return i + 1;
+  }
+  return 0;
+}
+
+function firstText(pdf: string, page: number): string {
+  const pages = [...pdf.matchAll(/stream\n([\s\S]*?)endstream/g)].map((match) => match[1]);
+  return pageTexts(pages[page - 1] ?? "").find((text) => !/^\d+$/.test(text)) ?? "";
+}
+
+function pageTexts(stream: string): string[] {
+  const out: string[] = [];
+  for (const part of stream.matchAll(/([\d.]+) ([\d.]+) Td([\s\S]*?) ET/g)) {
+    if (Number(part[2]) < 50) continue;
+    const strings = [...part[3].matchAll(/\(((?:\\.|[^\\)])*)\) Tj/g)].map((match) => unescapePdf(match[1]));
+    const text = strings.join("");
+    if (text) out.push(text);
+  }
+  return out;
 }
 
 /** The text-showing operators of the first page, as [font, size, string] in order. */

@@ -1,7 +1,7 @@
 import MarkdownIt from "markdown-it";
 import footnote from "markdown-it-footnote";
 import type { Fs } from "./book";
-import { exportBook } from "./export";
+import { CHAPTER_NUMBER_CLASS, PAGE_BREAK_CLASS, exportBook } from "./export";
 import type { TreeNode } from "./model";
 import { bookPicturePath } from "./pictures";
 import { joinPath } from "./path";
@@ -29,8 +29,8 @@ const TEXT_WIDTH = PAGE_WIDTH - 2 * MARGIN;
 const BOTTOM = MARGIN;
 const CONTENT_HEIGHT = PAGE_HEIGHT - 2 * MARGIN;
 
-/** F1 Helvetica, F2 Helvetica-Bold, F3 Courier, F4 Helvetica-Oblique, F5 Helvetica-BoldOblique. */
-type FontKey = "F1" | "F2" | "F3" | "F4" | "F5";
+/** F1 Helvetica, F2 Helvetica-Bold, F3 Courier, F4 Helvetica-Oblique, F5 Helvetica-BoldOblique, F6 Symbol. */
+type FontKey = "F1" | "F2" | "F3" | "F4" | "F5" | "F6";
 
 const FONT_NAMES: Record<FontKey, string> = {
   F1: "Helvetica",
@@ -38,6 +38,7 @@ const FONT_NAMES: Record<FontKey, string> = {
   F3: "Courier",
   F4: "Helvetica-Oblique",
   F5: "Helvetica-BoldOblique",
+  F6: "Symbol",
 };
 
 // Advance widths for ASCII 32..126, in 1/1000 em. Oblique faces share the upright widths.
@@ -87,18 +88,64 @@ const WIN_ANSI: Record<number, number> = {
   0x0178: 0x9f,
 };
 
+/** Horizontal, vertical, ├-shape, and └-shape box drawing. Other U+2500–U+257F characters become +. */
+const BOX_HORIZONTAL = new Set([0x2500, 0x2501, 0x2504, 0x2505, 0x2508, 0x2509, 0x254c, 0x254d, 0x2550]);
+const BOX_VERTICAL = new Set([0x2502, 0x2503, 0x2506, 0x2507, 0x250a, 0x250b, 0x254e, 0x254f, 0x2551]);
+const BOX_FORK = new Set([0x251c, 0x2523, 0x2560]);
+const BOX_ELBOW = new Set([0x2514, 0x2517, 0x255a]);
+
+/**
+ * One ASCII column for a box-drawing character. The standard fonts have no such glyphs.
+ * ├── is drawn as |-- and └── as `--, and a run of ─ is a run of hyphens.
+ */
+function boxAscii(cp: number): number | undefined {
+  if (cp < 0x2500 || cp > 0x257f) return undefined;
+  if (BOX_HORIZONTAL.has(cp)) return 0x2d;
+  if (BOX_VERTICAL.has(cp) || BOX_FORK.has(cp)) return 0x7c;
+  if (BOX_ELBOW.has(cp)) return 0x60;
+  if (cp === 0x2571) return 0x2f;
+  if (cp === 0x2572) return 0x5c;
+  if (cp === 0x2573) return 0x78;
+  return 0x2b;
+}
+
+/** WinAnsi byte for one character, or null when the standard fonts cannot show it as itself. */
+function winAnsiByte(cp: number): number | null {
+  const drawn = boxAscii(cp);
+  if (drawn !== undefined) return drawn;
+  if (cp === 0x276f) return 0x9b; // ❯ the prompt angle, drawn as ›
+  if (cp === 0x23fa) return 0x95; // ⏺ the reply mark, drawn as •
+  if (cp === 0x23bf) return 0x60; // ⎿ the result elbow, drawn as `
+  if (cp === 0x2212) return 0x2d; // − minus sign, drawn as -
+  if (cp === 9) return 32;
+  if (cp >= 32 && cp <= 126) return cp;
+  if (cp >= 160 && cp <= 255) return cp;
+  const mapped = WIN_ANSI[cp];
+  return mapped === undefined ? null : mapped;
+}
+
+/** ⁰ and ⁴–⁹ have no superscript glyph in the text fonts. The digit is drawn smaller and raised. */
+function raisedDigit(cp: number): number | undefined {
+  if (cp === 0x2070) return 0x30;
+  if (cp >= 0x2074 && cp <= 0x2079) return 0x30 + (cp - 0x2070);
+  return undefined;
+}
+
 /** Map text to single-byte WinAnsi codes; anything outside that set becomes "?". A tab is one space here; code expands tabs first. */
 function encode(text: string): number[] {
   const codes: number[] = [];
+  for (const char of text.normalize("NFC")) codes.push(winAnsiByte(char.codePointAt(0)!) ?? 63);
+  return codes;
+}
+
+function hasUnshownCharacter(text: string): boolean {
   for (const char of text.normalize("NFC")) {
     const cp = char.codePointAt(0)!;
-    if (cp === 9) codes.push(32);
-    else if (cp >= 32 && cp <= 126) codes.push(cp);
-    else if (cp >= 160 && cp <= 255) codes.push(cp);
-    else if (WIN_ANSI[cp] !== undefined) codes.push(WIN_ANSI[cp]);
-    else codes.push(63);
+    if (cp === 10 || cp === 13 || cp === 0x03c0 || cp === 0x03a0) continue;
+    if (raisedDigit(cp) !== undefined) continue;
+    if (winAnsiByte(cp) === null) return true;
   }
-  return codes;
+  return false;
 }
 
 /** Replace tabs with spaces up to the next multiple of `stop` columns, so indentation lines up. */
@@ -130,6 +177,7 @@ function pdfString(codes: number[]): string {
 
 function glyphWidth(code: number, font: FontKey): number {
   if (font === "F3") return 600;
+  if (font === "F6") return code === 0x70 ? 549 : code === 0x50 ? 614 : 556;
   const table = font === "F2" || font === "F5" ? HELVETICA_BOLD : HELVETICA;
   return code >= 32 && code <= 126 ? table[code - 32] : 556;
 }
@@ -142,10 +190,10 @@ function textWidth(codes: number[], font: FontKey, size: number): number {
 
 /** Text in one font. Spaces inside a `nobreak` run never start a new line (code spans). */
 type Run = { text: string; font: FontKey; nobreak?: boolean };
-type Piece = { codes: number[]; font: FontKey };
+type Piece = { codes: number[]; font: FontKey; rise?: number; scale?: number };
 
 function pieceWidth(piece: Piece, size: number): number {
-  return textWidth(piece.codes, piece.font, size);
+  return textWidth(piece.codes, piece.font, size * (piece.scale ?? 1));
 }
 
 function linePieceWidth(pieces: Piece[], size: number): number {
@@ -154,8 +202,34 @@ function linePieceWidth(pieces: Piece[], size: number): number {
 
 function append(line: Piece[], piece: Piece): void {
   const last = line[line.length - 1];
-  if (last && last.font === piece.font) last.codes.push(...piece.codes);
-  else line.push({ codes: [...piece.codes], font: piece.font });
+  if (last && last.font === piece.font && last.rise === piece.rise && last.scale === piece.scale) {
+    last.codes.push(...piece.codes);
+  } else line.push({ codes: [...piece.codes], font: piece.font, rise: piece.rise, scale: piece.scale });
+}
+
+type Glyph = { code: number; font: FontKey; rise?: number; scale?: number };
+
+/** Characters of one run. Pi uses Symbol. A missing superscript digit is a raised digit. */
+function glyphs(text: string, font: FontKey): Glyph[] {
+  const out: Glyph[] = [];
+  for (const char of text.normalize("NFC")) {
+    const cp = char.codePointAt(0)!;
+    const digit = raisedDigit(cp);
+    if (digit !== undefined) {
+      out.push({ code: digit, font, rise: 0.35, scale: 0.6 });
+      continue;
+    }
+    if (cp === 0x03c0) {
+      out.push({ code: 0x70, font: "F6" });
+      continue;
+    }
+    if (cp === 0x03a0) {
+      out.push({ code: 0x50, font: "F6" });
+      continue;
+    }
+    out.push({ code: winAnsiByte(cp) ?? 63, font });
+  }
+  return out;
 }
 
 type Token = { space: Piece } | { word: Piece[] };
@@ -176,16 +250,17 @@ function tokenize(runs: Run[]): Token[][] {
         endWord();
         lines.push([]);
       }
-      for (const code of encode(part)) {
-        if (code === 32 && !run.nobreak) {
+      for (const glyph of glyphs(part, run.font)) {
+        if (glyph.code === 32 && !run.nobreak && glyph.rise === undefined && glyph.font === run.font) {
           endWord();
           const tokens = line();
           const last = tokens[tokens.length - 1];
           if (tokens.length > 0 && !(last && "space" in last)) tokens.push({ space: { codes: [32], font: run.font } });
         } else {
           const tail = word[word.length - 1];
-          if (tail && tail.font === run.font) tail.codes.push(code);
-          else word.push({ codes: [code], font: run.font });
+          if (tail && tail.font === glyph.font && tail.rise === glyph.rise && tail.scale === glyph.scale) {
+            tail.codes.push(glyph.code);
+          } else word.push({ codes: [glyph.code], font: glyph.font, rise: glyph.rise, scale: glyph.scale });
         }
       }
     });
@@ -213,9 +288,9 @@ function wrapRuns(runs: Run[], size: number, width: number): Piece[][] {
       // A word wider than a whole line: cut it wherever it reaches the edge.
       for (const piece of word) {
         for (const code of piece.codes) {
-          const w = textWidth([code], piece.font, size);
+          const w = textWidth([code], piece.font, size * (piece.scale ?? 1));
           if (currentWidth + w > width && currentWidth > 0) flush();
-          append(current, { codes: [code], font: piece.font });
+          append(current, { codes: [code], font: piece.font, rise: piece.rise, scale: piece.scale });
           currentWidth += w;
         }
       }
@@ -273,10 +348,20 @@ const CODE_LEADING = 11.5;
 const CODE_PAD = 5;
 const CODE_RULE = 2;
 
+/** A run of blocks that must not be left behind when the next block starts a new page. */
+type Hold = { index: number; cursor: number; yAfter: number };
+
 class Layout {
   pages: Item[][] = [[]];
   y = PAGE_HEIGHT - MARGIN;
   images: PdfImage[] = [];
+  /**
+   * The chapter line and the headings under it. `keepWithNext` only reserves a
+   * fixed gap, which is shorter than the heading that follows, so a chapter
+   * number was left at the bottom of the previous page. The whole run moves
+   * with the block that did not fit.
+   */
+  private hold: Hold | null = null;
 
   private get page(): Item[] {
     return this.pages[this.pages.length - 1];
@@ -285,11 +370,37 @@ class Layout {
   newPage(): void {
     this.pages.push([]);
     this.y = PAGE_HEIGHT - MARGIN;
+    this.hold = null;
   }
 
-  /** Start a new page unless `height` still fits on this one. */
-  need(height: number): void {
-    if (this.y - height < BOTTOM && this.page.length > 0) this.newPage();
+  /** True when this page already holds something, so a page break starts the next page. */
+  hasContent(): boolean {
+    return this.page.length > 0;
+  }
+
+  /**
+   * Start a new page unless `height` still fits. `gap` is reapplied above the
+   * block when a kept run moves with it. Returns true when a new page was opened.
+   */
+  need(height: number, gap = 0): boolean {
+    if (this.y - height >= BOTTOM || this.page.length === 0) return false;
+    const hold = this.hold;
+    if (hold && hold.index < this.page.length && hold.cursor > hold.yAfter) {
+      const yAfter = PAGE_HEIGHT - MARGIN - (hold.cursor - hold.yAfter);
+      if (yAfter - gap - height >= BOTTOM) {
+        const carried = this.page.splice(hold.index);
+        const shift = PAGE_HEIGHT - MARGIN - hold.cursor;
+        this.hold = null;
+        this.newPage();
+        for (const item of carried) item.y += shift;
+        this.page.push(...carried);
+        this.y = yAfter - gap;
+        return true;
+      }
+    }
+    this.hold = null;
+    this.newPage();
+    return true;
   }
 
   text(content: string | Run[], options: TextOptions): void {
@@ -297,10 +408,17 @@ class Layout {
     const leading = options.leading ?? options.size * 1.35;
     const runs = typeof content === "string" ? [{ text: content, font: options.font }] : content;
     const lines = wrapRuns(runs, options.size, TEXT_WIDTH - indent);
-    if (options.before && this.page.length > 0) this.y -= options.before;
-    this.need(leading * Math.min(lines.length, 2) + (options.keepWithNext ?? 0));
+    const gap = options.before && this.page.length > 0 ? options.before : 0;
+    this.y -= gap;
+    this.need(leading * Math.min(lines.length, 2) + (options.keepWithNext ?? 0), gap);
+    const origin = this.page.length;
+    const cursor = this.y;
+    let moved = false;
     lines.forEach((pieces, index) => {
-      if (this.y - leading < BOTTOM) this.newPage();
+      if (this.y - leading < BOTTOM) {
+        this.newPage();
+        moved = true;
+      }
       this.y -= leading;
       if (index === 0 && options.bullet) {
         const bullet: Piece = { codes: encode(options.bullet), font: options.font };
@@ -312,6 +430,10 @@ class Layout {
       this.page.push({ kind: "text", pieces, size: options.size, x, y: this.y });
     });
     this.y -= options.after ?? 0;
+    if (options.keepWithNext && !moved) {
+      if (this.hold && this.hold.index <= origin) this.hold.yAfter = this.y;
+      else this.hold = { index: origin, cursor, yAfter: this.y };
+    } else this.hold = null;
   }
 
   rule(): void {
@@ -319,6 +441,7 @@ class Layout {
     this.y -= 6;
     this.page.push({ kind: "rule", y: this.y });
     this.y -= 6;
+    this.hold = null;
   }
 
   /**
@@ -349,7 +472,8 @@ class Layout {
       if (take < Math.min(2, remaining)) {
         if (this.page.length === 0) take = 1;
         else {
-          this.newPage();
+          const fitsWithHeading = done === 0 && this.need(Math.min(2, remaining) * CODE_LEADING + 2 * CODE_PAD, 2);
+          if (!fitsWithHeading) this.newPage();
           continue;
         }
       }
@@ -377,6 +501,7 @@ class Layout {
       }
       this.y = top - height;
       done += take;
+      this.hold = null;
       if (done < rows.length) this.newPage();
     }
     this.y -= 8;
@@ -398,7 +523,7 @@ class Layout {
     w *= shrink;
     h *= shrink;
     this.y -= 4;
-    this.need(h + captionHeight + 8);
+    this.need(h + captionHeight + 8, 4);
     const x = MARGIN + indent + (available - w) / 2;
     this.y -= h;
     this.page.push({ kind: "image", index: key, x, y: this.y, w, h, orientation: image.orientation });
@@ -407,6 +532,7 @@ class Layout {
       this.y -= 2;
       this.text(caption, { font: "F4", size: 9.5, indent, center: true, after: 6 });
     } else this.y -= 4;
+    this.hold = null;
   }
 }
 
@@ -577,12 +703,19 @@ export async function loadPictures(fs: Fs, root: string, markdown: string, optio
   return pictures;
 }
 
+/** The "Part N" or "Chapter N" line, when this paragraph is that opener. */
+function divisionLine(content: string): string | null {
+  const matched = new RegExp(`^<p class="${CHAPTER_NUMBER_CLASS}">((?:Part|Chapter) \\d+)</p>$`).exec(content.trim());
+  return matched?.[1] ?? null;
+}
+
 function layoutTokens(tokens: MdToken[], layout: Layout, warnings: string[], pictures: Pictures | undefined): void {
   type ListState = { ordered: boolean; count: number };
   const lists: ListState[] = [];
   let quote = 0;
   let pendingBullet: string | null = null;
   let heading = 0;
+  let chapterLead = false;
   let inNotes = false;
   let noteNumber = 0;
   let row: Run[][] | null = null;
@@ -627,7 +760,25 @@ function layoutTokens(tokens: MdToken[], layout: Layout, warnings: string[], pic
         break;
       case "heading_close":
         heading = 0;
+        chapterLead = false;
         break;
+      case "html_block": {
+        if (token.content.trim() === `<div class="${PAGE_BREAK_CLASS}"></div>`) {
+          if (layout.hasContent()) layout.newPage();
+          break;
+        }
+        const opener = divisionLine(token.content);
+        if (opener) {
+          layout.text(opener, { font: "F2", size: 13, before: 22, after: 0, center: true, keepWithNext: 48 });
+          chapterLead = true;
+          break;
+        }
+        if (!warned.has("html")) {
+          warned.add("html");
+          warnings.push("Raw HTML is not shown in the PDF.");
+        }
+        break;
+      }
       case "bullet_list_open":
         lists.push({ ordered: false, count: 0 });
         break;
@@ -696,15 +847,30 @@ function layoutTokens(tokens: MdToken[], layout: Layout, warnings: string[], pic
           const clean = plainRuns(inlineSegments(token, "F2", available));
           const last = clean[clean.length - 1];
           if (last) last.text = last.text.replace(/\s*\{-\}\s*$/, "");
-          layout.text(clean, { font: "F2", size: HEADING_SIZE[heading], before: heading <= 2 ? 18 : 12, after: 6, keepWithNext: 40 });
+          const before = chapterLead ? 4 : heading <= 2 ? 18 : 12;
+          layout.text(clean, { font: "F2", size: HEADING_SIZE[heading], before, after: 6, keepWithNext: 40 });
         } else if (inNotes) {
           const label = noteFirst ? `${noteNumber}.` : undefined;
           noteFirst = false;
           layout.text(plainRuns(inlineSegments(token, "F1", available)), { font: "F1", size: 9.5, indent: indent(), after: 3, bullet: label });
         } else {
           for (const segment of inlineSegments(token, "F1", available)) {
-            if ("picture" in segment) place(segment.picture, segment.alone);
-            else paragraph(segment.runs);
+            if ("picture" in segment) {
+              place(segment.picture, segment.alone);
+              continue;
+            }
+            const text = segment.runs.map((run) => run.text).join("").trim();
+            if (text === `<div class="${PAGE_BREAK_CLASS}"></div>`) {
+              if (layout.hasContent()) layout.newPage();
+              continue;
+            }
+            const opener = divisionLine(text);
+            if (opener) {
+              layout.text(opener, { font: "F2", size: 13, before: 22, after: 0, center: true, keepWithNext: 48 });
+              chapterLead = true;
+              continue;
+            }
+            paragraph(segment.runs);
           }
         }
         break;
@@ -713,7 +879,6 @@ function layoutTokens(tokens: MdToken[], layout: Layout, warnings: string[], pic
         break;
     }
   }
-  if (tokens.some((token) => token.type === "html_block")) warnings.push("Raw HTML is not shown in the PDF.");
 }
 
 /** PDF matrix that puts the stored picture into a `w` by `h` box at (x, y) as its EXIF orientation says. */
@@ -735,7 +900,9 @@ function imageMatrix(item: ImageItem): string {
 function assemble(layout: Layout, title: string): string {
   const pageCount = layout.pages.length;
   const objects: string[] = [];
-  const FIRST_PAGE = 9;
+  const fontKeys = Object.keys(FONT_NAMES) as FontKey[];
+  const INFO_ID = 3 + fontKeys.length;
+  const FIRST_PAGE = INFO_ID + 1;
   const firstImage = FIRST_PAGE + pageCount * 2;
   // Each picture takes one object, or two when it has a soft mask.
   const imageIds: number[] = [];
@@ -749,10 +916,11 @@ function assemble(layout: Layout, title: string): string {
   objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
   const kids = layout.pages.map((_, index) => `${FIRST_PAGE + index * 2} 0 R`).join(" ");
   objects[2] = `<< /Type /Pages /Kids [${kids}] /Count ${pageCount} >>`;
-  (Object.keys(FONT_NAMES) as FontKey[]).forEach((key, index) => {
-    objects[3 + index] = `<< /Type /Font /Subtype /Type1 /BaseFont /${FONT_NAMES[key]} /Encoding /WinAnsiEncoding >>`;
+  fontKeys.forEach((key, index) => {
+    const encoding = key === "F6" ? "" : " /Encoding /WinAnsiEncoding";
+    objects[3 + index] = `<< /Type /Font /Subtype /Type1 /BaseFont /${FONT_NAMES[key]}${encoding} >>`;
   });
-  objects[8] = `<< /Title ${pdfString(encode(title))} /Producer (Bookwriter) >>`;
+  objects[INFO_ID] = `<< /Title ${pdfString(encode(title))} /Producer (Bookwriter) >>`;
 
   layout.pages.forEach((items, index) => {
     let content = "";
@@ -769,7 +937,13 @@ function assemble(layout: Layout, title: string): string {
         const visible = item.pieces.filter((piece) => piece.codes.length > 0);
         if (visible.length === 0) continue;
         content += `BT ${item.gray === undefined ? "0 g" : `${item.gray} g`} ${item.x.toFixed(2)} ${item.y.toFixed(2)} Td`;
-        for (const piece of visible) content += ` /${piece.font} ${item.size} Tf ${pdfString(piece.codes)} Tj`;
+        for (const piece of visible) {
+          const size = piece.scale ? (item.size * piece.scale).toFixed(2) : String(item.size);
+          content += ` /${piece.font} ${size} Tf`;
+          if (piece.rise) content += ` ${(item.size * piece.rise).toFixed(2)} Ts`;
+          content += ` ${pdfString(piece.codes)} Tj`;
+          if (piece.rise) content += " 0 Ts";
+        }
         content += " ET\n";
       }
     }
@@ -780,7 +954,7 @@ function assemble(layout: Layout, title: string): string {
     const xobjects = used.size
       ? ` /XObject << ${[...used].map((key) => `/Im${key} ${imageIds[key]} 0 R`).join(" ")} >>`
       : "";
-    const fonts = (Object.keys(FONT_NAMES) as FontKey[]).map((key, n) => `/${key} ${3 + n} 0 R`).join(" ");
+    const fonts = fontKeys.map((key, n) => `/${key} ${3 + n} 0 R`).join(" ");
     objects[pageId] =
       `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] ` +
       `/Resources << /Font << ${fonts} >>${xobjects} >> /Contents ${pageId + 1} 0 R >>`;
@@ -817,7 +991,7 @@ function assemble(layout: Layout, title: string): string {
   const xref = out.length;
   out += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
   for (let id = 1; id < objects.length; id++) out += `${String(offsets[id]).padStart(10, "0")} 00000 n \n`;
-  out += `trailer\n<< /Size ${objects.length} /Root 1 0 R /Info 8 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  out += `trailer\n<< /Size ${objects.length} /Root 1 0 R /Info ${INFO_ID} 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return out;
 }
 
@@ -826,7 +1000,7 @@ export function markdownToPdf(markdown: string, title = "", pictures?: Pictures)
   const warnings: string[] = [];
   const layout = new Layout();
   layoutTokens(md.parse(markdown, {}), layout, warnings, pictures);
-  if (/[^\u0000-\u00ff\u2013\u2014\u2018\u2019\u201c\u201d\u2022\u2026\u20ac\u2122]/u.test(markdown)) {
+  if (hasUnshownCharacter(markdown)) {
     warnings.push("Some characters cannot be shown in the PDF and were replaced with ?.");
   }
   return { pdf: assemble(layout, title), pages: layout.pages.length, warnings };

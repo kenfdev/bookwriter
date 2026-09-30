@@ -6,3 +6,10 @@ src-tauri/target-bw/
 src-tauri/gen/
 .DS_Store
 *.log
+.metrics/
+.uml-viewer/
+examples/
+plans/
+target/
+uml
+uml-viewer-log.txt

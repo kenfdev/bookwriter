@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TreeNode } from "./model";
-import { renderSection } from "./preview";
+import { renderBook, renderGroup, renderSection } from "./preview";
 
 function section(body: string, role: TreeNode["header"]["role"] = "body"): TreeNode {
   return {
@@ -74,6 +74,126 @@ describe("preview", () => {
     const sized = renderSection(section("![Map](images/map.png){width=40% height=8cm}\n"), []);
     expect(sized.html).toContain('style="width: 40%; height: 8cm"');
     expect(sized.html).not.toContain("{width=");
+  });
+
+  it("renders the whole manuscript in order and skips nothing it was given", () => {
+    const preface = section("Before.\n", "front");
+    preface.header = { ...preface.header, id: "preface", title: "Preface" };
+    const chapter: TreeNode = {
+      kind: "group",
+      header: { id: "naming", title: "Naming", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      body: "Opener.\n",
+      prefix: "020",
+      slug: "naming",
+      dir: "",
+      entryName: "020-naming",
+      children: [section("Inside.\n")],
+    };
+    const rendered = renderBook([preface, chapter]);
+    expect(rendered.html.indexOf("<h1>Preface</h1>")).toBeLessThan(rendered.html.indexOf("Chapter 1"));
+    expect(rendered.html).toContain('<p class="chapter-number">Chapter 1</p><h1>Naming</h1>');
+    expect(rendered.html).toContain("<h2>Inward</h2>");
+    expect(rendered.html.indexOf("Page break")).toBeGreaterThan(rendered.html.indexOf("<h1>Preface</h1>"));
+    expect(rendered.html.indexOf("Page break")).toBeLessThan(rendered.html.indexOf("Chapter 1"));
+    expect(rendered.warnings).toEqual([]);
+  });
+
+  it("numbers a chapter heading and not the folder's child", () => {
+    const chapter: TreeNode = {
+      kind: "group",
+      header: { id: "naming", title: "Naming", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      body: "Opener.\n",
+      prefix: "010",
+      slug: "naming",
+      dir: "",
+      entryName: "010-naming",
+      children: [section("Inside.\n")],
+    };
+    const rendered = renderGroup(chapter);
+    expect(rendered.html).toContain('<section class="rendered-section folder break"');
+    expect(rendered.html).toContain('<p class="chapter-number">Chapter 1</p><h1>Naming</h1>');
+    expect(rendered.html).toContain("<h2>Inward</h2>");
+    expect(rendered.html).not.toContain("<h2>Chapter");
+    expect(rendered.html).not.toContain("Page break");
+  });
+
+  it("marks a folder inside the one being read", () => {
+    const inner: TreeNode = {
+      kind: "group",
+      header: { id: "rule", title: "The Rule", synopsis: "", status: "draft", role: "body" },
+      body: "Nested.\n",
+      prefix: "010",
+      slug: "rule",
+      dir: "",
+      entryName: "010-rule",
+      children: [],
+    };
+    const chapter: TreeNode = {
+      kind: "group",
+      header: { id: "naming", title: "Naming", synopsis: "", status: "draft", role: "body" },
+      body: "Opener.\n",
+      prefix: "020",
+      slug: "naming",
+      dir: "",
+      entryName: "020-naming",
+      children: [inner],
+    };
+    const rendered = renderGroup(chapter);
+    const breaks = rendered.html.split("Page break");
+    expect(breaks).toHaveLength(2);
+    expect(breaks[0]).toContain("<h1>Naming</h1>");
+    expect(breaks[1]).toContain("<h2>The Rule</h2>");
+  });
+
+  it("marks a section whose page break is set and skips a folder whose page break is clear", () => {
+    const scene = section("Next.\n");
+    scene.header = { ...scene.header, id: "scene", title: "Scene", break: true };
+    const quiet: TreeNode = {
+      kind: "group",
+      header: { id: "quiet", title: "Quiet", synopsis: "", status: "draft", role: "body", break: false },
+      body: "Same page.\n",
+      prefix: "010",
+      slug: "quiet",
+      dir: "",
+      entryName: "010-quiet",
+      children: [scene],
+    };
+    const rendered = renderBook([section("Before.\n"), quiet]);
+    const breaks = rendered.html.split("Page break");
+    expect(breaks).toHaveLength(2);
+    expect(breaks[0]).toContain("<h1>Quiet</h1>");
+    expect(breaks[1]).toContain("<h2>Scene</h2>");
+
+    const opener = section("First.\n");
+    opener.header = { ...opener.header, break: true };
+    const alone = renderBook([opener]);
+    expect(alone.html).not.toContain("Page break");
+    expect(alone.html).toContain('class="rendered-section break"');
+  });
+
+  it("heads a part and a chapter, and leaves text on the same page", () => {
+    const stay = section("Stay.\n");
+    stay.header = { ...stay.header, id: "stay", title: "Stay", unit: "text" };
+    const next = section("Next.\n");
+    next.header = { ...next.header, id: "next", title: "Next", unit: "chapter" };
+    const part: TreeNode = {
+      kind: "group",
+      header: { id: "opening", title: "Opening", synopsis: "", status: "draft", role: "body", unit: "part" },
+      body: "Begin.\n",
+      prefix: "010",
+      slug: "opening",
+      dir: "",
+      entryName: "010-opening",
+      children: [stay, next],
+    };
+    const rendered = renderBook([part]);
+    expect(rendered.html).toContain('<p class="chapter-number">Part 1</p><h1>Opening</h1>');
+    expect(rendered.html).toContain('<p class="chapter-number">Chapter 1</p><h2>Next</h2>');
+    expect(rendered.html).not.toContain(">Section ");
+    const breaks = rendered.html.split("Page break");
+    expect(breaks).toHaveLength(2);
+    expect(breaks[0]).toContain("<h2>Stay</h2>");
+    expect(breaks[1]).toContain("<h2>Next</h2>");
   });
 
   it("labels a front-matter section", () => {

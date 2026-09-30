@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   assignPrefixes,
+  divisions,
+  effectiveUnit,
   nextPrefix,
   parseSection,
   serializeSection,
   slugify,
+  startsNewPage,
   uniqueId,
   wordCount,
+  type TreeNode,
 } from "./model";
 
 const inwardFile = `---
@@ -15,6 +19,7 @@ title: Inward
 synopsis: Source dependencies point inward, toward policy.
 status: draft
 role: body
+unit: text
 ---
 A dependency points inward.[^1]
 
@@ -39,6 +44,7 @@ describe("section files", () => {
       synopsis: "Source dependencies point inward, toward policy.",
       status: "draft",
       role: "body",
+      unit: "text",
     });
     expect(parsed.body.startsWith("A dependency points inward.[^1]\n")).toBe(true);
     expect(parsed.body).toContain("class Foo");
@@ -60,6 +66,43 @@ describe("section files", () => {
     expect(saved).toContain('synopsis: ""');
     expect(saved.endsWith("---\nLine\n")).toBe(true);
   });
+
+  it("reads and writes the unit, and keeps a legacy page break until a unit is set", () => {
+    const chapter = parseSection("---\nid: a\ntitle: A\nsynopsis: \"\"\nstatus: idea\nrole: body\nunit: chapter\n---\n");
+    expect(chapter.warnings).toEqual([]);
+    expect(chapter.header.unit).toBe("chapter");
+    expect(serializeSection(chapter.header, "")).toContain("role: body\nunit: chapter\n---\n");
+
+    const missing = parseSection("---\nid: a\ntitle: A\nsynopsis: \"\"\nstatus: idea\nrole: body\n---\n");
+    expect(missing.warnings).toEqual([]);
+    expect(missing.header.unit).toBeUndefined();
+    expect(serializeSection(missing.header, "")).not.toContain("unit:");
+
+    const bad = parseSection("---\nid: a\ntitle: A\nsynopsis: \"\"\nstatus: idea\nrole: body\nunit: maybe\n---\n");
+    expect(bad.warnings.some((warning) => warning.includes("Unit"))).toBe(true);
+    expect(bad.header.unit).toBeUndefined();
+
+    const on = parseSection("---\nid: a\ntitle: A\nsynopsis: \"\"\nstatus: idea\nrole: body\nbreak: true\n---\n");
+    expect(on.warnings).toEqual([]);
+    expect(on.header.break).toBe(true);
+    expect(on.header.unit).toBeUndefined();
+    expect(serializeSection(on.header, "")).toContain("role: body\nbreak: true\n---\n");
+    expect(effectiveUnit({ kind: "section", header: on.header })).toBe("section");
+
+    const off = parseSection("---\nid: a\ntitle: A\nsynopsis: \"\"\nstatus: idea\nrole: body\nbreak: false\n---\n");
+    expect(off.header.break).toBe(false);
+    expect(serializeSection(off.header, "")).toContain("break: false\n");
+    expect(effectiveUnit({ kind: "group", header: off.header })).toBe("text");
+
+    const both = parseSection("---\nid: a\ntitle: A\nsynopsis: \"\"\nstatus: idea\nrole: body\nunit: text\nbreak: true\n---\n");
+    expect(effectiveUnit({ kind: "group", header: both.header })).toBe("text");
+    expect(serializeSection(both.header, "")).toContain("unit: text\n");
+    expect(serializeSection(both.header, "")).not.toContain("break:");
+
+    const badBreak = parseSection("---\nid: a\ntitle: A\nsynopsis: \"\"\nstatus: idea\nrole: body\nbreak: maybe\n---\n");
+    expect(badBreak.warnings.some((warning) => warning.includes("Page break"))).toBe(true);
+    expect(badBreak.header.break).toBeUndefined();
+  });
 });
 
 describe("identity and order", () => {
@@ -79,6 +122,62 @@ describe("identity and order", () => {
     expect(assignPrefixes(100)[99]).toBe("1000");
     expect(nextPrefix(["010", "020"])).toBe("030");
     expect(nextPrefix([])).toBe("010");
+  });
+});
+
+function treeNode(
+  kind: TreeNode["kind"],
+  id: string,
+  role: TreeNode["header"]["role"] = "body",
+  children: TreeNode[] = [],
+): TreeNode {
+  return {
+    kind,
+    header: { id, title: id, synopsis: "", status: "idea", role },
+    body: "",
+    prefix: "010",
+    slug: id,
+    dir: "",
+    entryName: "",
+    children,
+  };
+}
+
+describe("parts and chapters", () => {
+  it("numbers parts and chapters in tree order and skips front matter and trash", () => {
+    const scene = treeNode("section", "scene");
+    scene.header = { ...scene.header, unit: "chapter" };
+    const naming = treeNode("group", "naming", "body", [scene]);
+    naming.header = { ...naming.header, unit: "part" };
+    const preface = treeNode("group", "preface", "front");
+    preface.header = { ...preface.header, unit: "chapter" };
+    const buried = treeNode("section", "buried");
+    buried.header = { ...buried.header, unit: "chapter" };
+    const trash = treeNode("group", "trash", "body", [buried]);
+    const practice = treeNode("section", "practice");
+    practice.header = { ...practice.header, unit: "chapter" };
+    const loose = treeNode("section", "loose");
+    const numbers = divisions([preface, loose, naming, trash, practice]);
+    expect(numbers.get("naming")).toEqual({ unit: "part", number: 1 });
+    expect(numbers.get("scene")).toEqual({ unit: "chapter", number: 1 });
+    expect(numbers.get("practice")).toEqual({ unit: "chapter", number: 2 });
+    expect(numbers.has("preface")).toBe(false);
+    expect(numbers.has("loose")).toBe(false);
+    expect(numbers.has("trash")).toBe(false);
+    expect(numbers.has("buried")).toBe(false);
+  });
+
+  it("pages a part, a chapter, and a section, and leaves text where it falls", () => {
+    const folder = treeNode("group", "naming");
+    const loose = treeNode("section", "loose");
+    expect(effectiveUnit(folder)).toBe("section");
+    expect(effectiveUnit(loose)).toBe("text");
+    expect(startsNewPage(folder)).toBe(true);
+    expect(startsNewPage(loose)).toBe(false);
+    expect(startsNewPage({ ...loose, header: { ...loose.header, unit: "chapter" } })).toBe(true);
+    expect(startsNewPage({ ...folder, header: { ...folder.header, unit: "text" } })).toBe(false);
+    expect(startsNewPage({ ...loose, header: { ...loose.header, break: true } })).toBe(true);
+    expect(startsNewPage({ ...folder, header: { ...folder.header, break: false } })).toBe(false);
   });
 });
 

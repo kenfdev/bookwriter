@@ -2,8 +2,8 @@ import "./styles.css";
 import { defaultKeymap, history, historyKeymap, redo, redoDepth, undo, undoDepth } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
-import { findNext, findPrevious, openSearchPanel, search, searchKeymap } from "@codemirror/search";
-import { EditorState, Transaction } from "@codemirror/state";
+import { findNext, findPrevious, getSearchQuery, openSearchPanel, search, searchKeymap, setSearchQuery } from "@codemirror/search";
+import { EditorSelection, EditorState, Transaction } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -23,14 +23,15 @@ import {
 } from "./book";
 import { COMMANDS, applyCommand, latestLanguage, type CommandId } from "./commands";
 import { exportBook } from "./export";
+import { nextMatch, previousMatch, type FindPart } from "./find";
 import { exportPdfWithPictures } from "./pdf";
 import { rasterizePicture } from "./rasterize";
 import { formatAccelerator } from "./keys";
-import { sourceOffset } from "./locate";
-import { findNode, nodeWordCount, slugify, walk, type Header, type Status, type TreeNode } from "./model";
+import { blockAtLine, lineOffset, offsetFraction, scrollToSpot, sourceOffset } from "./locate";
+import { divisionLabel, divisions, effectiveUnit, findNode, nodeWordCount, slugify, UNITS, walk, type Division, type Header, type Status, type TreeNode, type Unit } from "./model";
 import { joinPath, parentPath } from "./path";
 import { PICTURE_EXTENSIONS, placePicture, resolvePictureSources } from "./pictures";
-import { renderGroup, renderSection } from "./preview";
+import { renderBook, renderGroup, renderSection } from "./preview";
 import { clampPreviewWidth, previewWidthFromPointer } from "./split";
 import { allowBook, startupBookPath, tauriFs } from "./tauriFs";
 import { dropRedo, emptyTrail, historyStep, noteVisit, redoVisit, undoVisit } from "./trail";
@@ -45,6 +46,7 @@ const fieldTitle = document.querySelector<HTMLInputElement>("#field-title")!;
 const fieldSynopsis = document.querySelector<HTMLTextAreaElement>("#field-synopsis")!;
 const fieldStatus = document.querySelector<HTMLSelectElement>("#field-status")!;
 const fieldRole = document.querySelector<HTMLSelectElement>("#field-role")!;
+const unitInputs = [...document.querySelectorAll<HTMLInputElement>('#inspector input[name="unit"]')];
 const fieldId = document.querySelector<HTMLElement>("#field-id")!;
 const editProse = document.querySelector<HTMLButtonElement>("#btn-edit-prose")!;
 const readGroup = document.querySelector<HTMLButtonElement>("#btn-read")!;
@@ -65,6 +67,9 @@ const createLabel = document.querySelector<HTMLElement>("#create-label")!;
 const createTitle = document.querySelector<HTMLInputElement>("#create-title")!;
 
 let book: Book | null = null;
+/** Outline row for the whole manuscript. Not a node id. */
+const BOOK_ID = "\u0000book";
+
 let selectedId: string | null = null;
 const collapsed = new Set<string>();
 let editingProse = false;
@@ -84,6 +89,26 @@ function inMarkup(command: Command): Command {
   return (view) => editing() && command(view);
 }
 
+/** Survives a new editor state when Find Next opens another text. */
+let searchWholeBook = false;
+
+/** Find Next and Find Previous follow the whole-book checkbox. Other search commands stay as they are. */
+function bookSearch(command: Command): Command {
+  return (view) => {
+    if (searchWholeBook && command === findNext) {
+      void findInBook("next");
+      return true;
+    }
+    if (searchWholeBook && command === findPrevious) {
+      void findInBook("previous");
+      return true;
+    }
+    const ran = command(view);
+    if (ran) wireBookFind(view);
+    return ran;
+  };
+}
+
 const editorExtensions = [
   history(),
   search({ top: true }),
@@ -96,8 +121,8 @@ const editorExtensions = [
     { linux: "Ctrl-Shift-z", run: () => requestHistory("redo"), preventDefault: true },
     ...searchKeymap.map((binding) => ({
       ...binding,
-      run: binding.run ? inMarkup(binding.run) : undefined,
-      shift: binding.shift ? inMarkup(binding.shift) : undefined,
+      run: binding.run ? inMarkup(bookSearch(binding.run)) : undefined,
+      shift: binding.shift ? inMarkup(bookSearch(binding.shift)) : undefined,
     })),
     ...historyKeymap,
     ...defaultKeymap,
@@ -112,6 +137,10 @@ const editorExtensions = [
     ".cm-activeLine": { backgroundColor: "rgba(110, 75, 42, 0.04)" },
   }),
   EditorView.updateListener.of((update) => {
+    // Find Next and Find Previous mark the selection with this event. Select-all uses a longer name.
+    if (update.transactions.some((tr) => tr.annotation(Transaction.userEvent) === "select.search")) {
+      scrollPreviewToCursor();
+    }
     if (!update.docChanged || suppress) return;
     const motion = update.transactions.some((tr) => {
       const event = tr.annotation(Transaction.userEvent);
@@ -133,8 +162,16 @@ const editor = new EditorView({
   state: EditorState.create({ doc: "", extensions: editorExtensions }),
 });
 
+function viewingBook(): boolean {
+  return selectedId === BOOK_ID;
+}
+
+function selectable(id: string): boolean {
+  return id === BOOK_ID || (!!book && !!findNode(book.nodes, id));
+}
+
 function selected(): { node: TreeNode; ancestors: TreeNode[] } | null {
-  if (!book || !selectedId) return null;
+  if (!book || !selectedId || viewingBook()) return null;
   return findNode(book.nodes, selectedId);
 }
 
@@ -144,6 +181,12 @@ function editing(): boolean {
   return current.node.kind === "section" || editingProse;
 }
 
+function selectedUnit(): Unit {
+  const picked = unitInputs.find((input) => input.checked)?.value;
+  if (picked && (UNITS as readonly string[]).includes(picked)) return picked as Unit;
+  return "text";
+}
+
 function headerFromForm(node: TreeNode): Header {
   return {
     id: node.header.id,
@@ -151,6 +194,7 @@ function headerFromForm(node: TreeNode): Header {
     synopsis: fieldSynopsis.value,
     status: fieldStatus.value as Status,
     role: fieldRole.value === "front" ? "front" : "body",
+    unit: selectedUnit(),
   };
 }
 
@@ -230,7 +274,7 @@ async function stepHistory(kind: "undo" | "redo"): Promise<void> {
   const here = takeVisit();
   if (!here || !book) return;
   const moved = kind === "undo" ? undoVisit(trail, here) : redoVisit(trail, here);
-  if (!moved || !findNode(book.nodes, moved.to.id)) return;
+  if (!moved || !selectable(moved.to.id)) return;
   trail = moved.trail;
   historyBusy = true;
   try {
@@ -246,7 +290,7 @@ async function land(visit: Visit): Promise<void> {
     cancelSave();
     await flush();
     if (dirty) await flush();
-    if (!book || !findNode(book.nodes, visit.id)) return;
+    if (!book || !selectable(visit.id)) return;
     selectedId = visit.id;
     editingProse = visit.prose;
     if (visit.state) {
@@ -473,12 +517,50 @@ function drawPreview(): void {
     return;
   }
   const node = { ...current.node, body: editor.state.doc.toString(), children: current.node.children };
-  const rendered = renderSection(node, current.ancestors);
+  const rendered = renderSection(node, current.ancestors, divisionOf(current.node));
+  const sameSection = previewEl.querySelector<HTMLElement>("section[data-id]")?.dataset.id === node.header.id;
+  const scroll = sameSection ? previewEl.scrollTop : 0;
   previewEl.innerHTML = showPictures(rendered.html);
+  previewEl.scrollTop = scroll;
   showWarnings([...(book?.warnings ?? []), ...rendered.warnings]);
 }
 
+const PREVIEW_SCROLL_PADDING = 48;
+
+/** Scroll the preview to the rendered block around the editor cursor. */
+function scrollPreviewToCursor(): void {
+  if (previewEl.hidden || !editing()) return;
+  const source = editor.state.doc.toString();
+  const cursor = editor.state.selection.main.head;
+  const line = editor.state.doc.lineAt(cursor).number - 1;
+  const blocks = [...previewEl.querySelectorAll<HTMLElement>("[data-line]")];
+  const spans = blocks.map((block) => {
+    const start = Number(block.dataset.line);
+    const end = block.dataset.end === undefined ? start + 1 : Number(block.dataset.end);
+    return { start, end };
+  });
+  const picked = blockAtLine(spans, line);
+  if (picked < 0) {
+    previewEl.scrollTop = 0;
+    return;
+  }
+  const span = spans[picked];
+  const fraction = offsetFraction(cursor, lineOffset(source, span.start), lineOffset(source, span.end));
+  const pane = previewEl.getBoundingClientRect();
+  const rect = blocks[picked].getBoundingClientRect();
+  const spot = rect.top + rect.height * fraction;
+  previewEl.scrollTop = scrollToSpot(previewEl.scrollTop, pane.top, spot, PREVIEW_SCROLL_PADDING);
+}
+
 function drawReading(): void {
+  if (viewingBook() && book && !editing()) {
+    editorHost.hidden = true;
+    readingEl.hidden = false;
+    const rendered = renderBook(manuscriptNodes(book.nodes));
+    readingEl.innerHTML = showPictures(rendered.html);
+    showWarnings([...(book.warnings ?? []), ...rendered.warnings]);
+    return;
+  }
   const current = selected();
   if (!current || editing() || isTrash(current.node)) {
     readingEl.hidden = true;
@@ -488,14 +570,57 @@ function drawReading(): void {
   }
   editorHost.hidden = true;
   readingEl.hidden = false;
-  const rendered = renderGroup(current.node, current.ancestors);
+  const rendered = renderGroup(current.node, current.ancestors, book ? divisions(book.nodes) : undefined);
   readingEl.innerHTML = showPictures(rendered.html);
   showWarnings([...(book?.warnings ?? []), ...rendered.warnings]);
+}
+
+function divisionOf(node: TreeNode): Division | undefined {
+  if (!book) return undefined;
+  return divisions(book.nodes).get(node.header.id);
+}
+
+function outlineTitle(node: TreeNode): string {
+  return node.header.title || node.slug;
+}
+
+function bookWordCount(): number {
+  if (!book) return 0;
+  return manuscriptNodes(book.nodes).reduce((sum, node) => sum + nodeWordCount(node), 0);
 }
 
 function renderOutline(): void {
   outlineEl.replaceChildren();
   if (!book) return;
+  const bookRow = document.createElement("div");
+  bookRow.className = `node book${viewingBook() ? " selected" : ""}`;
+  bookRow.dataset.id = BOOK_ID;
+  const bookOpen = !collapsed.has(BOOK_ID);
+  const bookTwist = document.createElement("button");
+  bookTwist.type = "button";
+  bookTwist.className = "twist";
+  bookTwist.textContent = bookOpen ? "▾" : "▸";
+  bookTwist.setAttribute("aria-expanded", String(bookOpen));
+  bookTwist.setAttribute("aria-label", bookOpen ? "Collapse book" : "Expand book");
+  bookTwist.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (collapsed.has(BOOK_ID)) collapsed.delete(BOOK_ID);
+    else collapsed.add(BOOK_ID);
+    renderOutline();
+  });
+  const bookBody = document.createElement("div");
+  bookBody.className = "node-body";
+  const bookLabel = document.createElement("span");
+  bookLabel.className = "title";
+  bookLabel.textContent = book.title || "Book";
+  const bookMeta = document.createElement("span");
+  bookMeta.className = "meta";
+  bookMeta.textContent = `${bookWordCount()} words`;
+  bookBody.append(bookLabel, bookMeta);
+  bookRow.append(bookTwist, bookBody);
+  bookRow.addEventListener("click", () => void choose(BOOK_ID, false));
+  outlineEl.append(bookRow);
+  if (!bookOpen) return;
   const draw = (nodes: TreeNode[], depth: number) => {
     for (const node of nodes) {
       const row = document.createElement("div");
@@ -528,9 +653,16 @@ function renderOutline(): void {
         spacer.className = "twist-spacer";
         row.append(spacer);
       }
+      const division = divisionOf(node);
+      if (division) {
+        const label = document.createElement("span");
+        label.className = "chapter-number";
+        label.textContent = divisionLabel(division);
+        body.append(label);
+      }
       const title = document.createElement("span");
       title.className = "title";
-      title.textContent = node.header.title || node.slug;
+      title.textContent = outlineTitle(node);
       const meta = document.createElement("span");
       meta.className = "meta";
       meta.textContent = `${node.header.status} · ${nodeWordCount(node)} words`;
@@ -568,7 +700,7 @@ function renderOutline(): void {
       if (node.kind === "group" && !collapsed.has(node.header.id)) draw(node.children, depth + 1);
     }
   };
-  draw(book.nodes, 0);
+  draw(book.nodes, 1);
 }
 
 function dropClass(row: HTMLElement, clientY: number, group: boolean): string {
@@ -590,12 +722,17 @@ function fillInspector(): void {
   fieldSynopsis.value = current.node.header.synopsis;
   fieldStatus.value = current.node.header.status;
   fieldRole.value = current.node.header.role;
+  const unit = effectiveUnit(current.node);
   fieldId.textContent = current.node.header.id;
   const trash = isTrash(current.node);
   fieldTitle.disabled = trash;
   fieldSynopsis.disabled = trash;
   fieldStatus.disabled = trash;
   fieldRole.disabled = trash;
+  for (const input of unitInputs) {
+    input.checked = input.value === unit;
+    input.disabled = trash;
+  }
   const group = current.node.kind === "group";
   editProse.hidden = trash || !group || editingProse;
   readGroup.hidden = trash || !group || !editingProse;
@@ -628,8 +765,8 @@ async function refresh(keep: string | null, resetHistory = false): Promise<void>
   const previousId = selectedId;
   const previousProse = editingProse;
   book = await loadBook(fs, book.root);
-  if (keep && findNode(book.nodes, keep)) selectedId = keep;
-  else selectedId = book.nodes[0]?.header.id ?? null;
+  if (keep === BOOK_ID || (keep && findNode(book.nodes, keep))) selectedId = keep;
+  else selectedId = BOOK_ID;
   const changed = resetHistory || selectedId !== previousId || editingProse !== previousProse;
   if (changed) trail = emptyTrail();
   bookTitle.value = book.title;
@@ -664,7 +801,7 @@ async function openRoot(root: string): Promise<void> {
   bookTitle.value = book.title;
   document.title = book.title || "Bookwriter";
   saveState.textContent = "Saved";
-  await refresh(book.nodes[0]?.header.id ?? null, true);
+  await refresh(BOOK_ID, true);
   if (pictureWarning) showWarnings([...(book?.warnings ?? []), pictureWarning]);
 }
 
@@ -1091,22 +1228,125 @@ async function editPaste(): Promise<void> {
 function openFind(): void {
   if (!editing()) return;
   openSearchPanel(editor);
+  wireBookFind(editor);
 }
 
 function openReplace(): void {
   if (!editing()) return;
   openSearchPanel(editor);
+  wireBookFind(editor);
   editor.dom.querySelector<HTMLInputElement>(".cm-search input[name=replace]")?.focus();
 }
 
 function goToNextMatch(): void {
   if (!editing()) return;
-  findNext(editor);
+  if (searchWholeBook) void findInBook("next");
+  else findNext(editor);
 }
 
 function goToPreviousMatch(): void {
   if (!editing()) return;
-  findPrevious(editor);
+  if (searchWholeBook) void findInBook("previous");
+  else findPrevious(editor);
+}
+
+/** Texts in tree order. The open buffer is used for the current node, so unsaved words are included. Trash is left out. */
+function searchParts(): FindPart[] {
+  if (!book) return [];
+  const current = selected();
+  const parts: FindPart[] = [];
+  walk(manuscriptNodes(book.nodes), (node) => {
+    const text = current && node.header.id === current.node.header.id ? editor.state.doc.toString() : node.body;
+    parts.push({ id: node.header.id, text });
+  });
+  if (current && editing() && !parts.some((part) => part.id === current.node.header.id)) {
+    parts.push({ id: current.node.header.id, text: editor.state.doc.toString() });
+  }
+  return parts;
+}
+
+function selectMatch(from: number, to: number): void {
+  const range = EditorSelection.range(from, to);
+  editor.dispatch({
+    selection: range,
+    effects: EditorView.scrollIntoView(range),
+    userEvent: "select.search",
+  });
+}
+
+function focusSearch(): void {
+  editor.dom.querySelector<HTMLInputElement>(".cm-search [main-field]")?.focus();
+}
+
+/** The panel's next, previous, and Enter follow the whole book checkbox once the panel is open. */
+function wireBookFind(view: EditorView): void {
+  const panel = view.dom.querySelector<HTMLElement>(".cm-search");
+  if (!panel || panel.dataset.bookFind) return;
+  panel.dataset.bookFind = "true";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.name = "book";
+  box.checked = searchWholeBook;
+  box.addEventListener("change", () => {
+    searchWholeBook = box.checked;
+  });
+  const label = document.createElement("label");
+  label.append(box, view.state.phrase("whole book"));
+  const word = panel.querySelector('input[name="word"]')?.parentElement;
+  if (word) word.after(label);
+  else panel.append(label);
+  const take = (direction: "next" | "previous", event: Event) => {
+    if (!searchWholeBook) return;
+    event.stopImmediatePropagation();
+    event.preventDefault();
+    void findInBook(direction);
+  };
+  panel.querySelector("button[name=next]")?.addEventListener("click", (event) => take("next", event), true);
+  panel.querySelector("button[name=prev]")?.addEventListener("click", (event) => take("previous", event), true);
+  panel.addEventListener("keydown", (event) => {
+    if (!searchWholeBook || event.key !== "Enter" || event.altKey || event.metaKey || event.ctrlKey) return;
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.name !== "search") return;
+    take(event.shiftKey ? "previous" : "next", event);
+  }, true);
+}
+
+let finding = false;
+
+async function findInBook(direction: "next" | "previous"): Promise<void> {
+  if (finding || !editing() || !book) return;
+  const query = getSearchQuery(editor.state);
+  if (!query.valid) {
+    openSearchPanel(editor);
+    wireBookFind(editor);
+    return;
+  }
+  const current = selected();
+  if (!current) return;
+  const from = direction === "next" ? editor.state.selection.main.to : editor.state.selection.main.from;
+  const hit = direction === "next"
+    ? nextMatch(searchParts(), current.node.header.id, from, query)
+    : previousMatch(searchParts(), current.node.header.id, from, query);
+  if (!hit) return;
+  const fromPanel = editor.dom.querySelector(".cm-search")?.contains(document.activeElement) ?? false;
+  if (hit.id !== current.node.header.id) {
+    const found = findNode(book.nodes, hit.id);
+    if (!found) return;
+    finding = true;
+    try {
+      await choose(hit.id, found.node.kind === "group");
+      openSearchPanel(editor);
+      editor.dispatch({ effects: setSearchQuery.of(query) });
+      wireBookFind(editor);
+      if (hit.to <= editor.state.doc.length) selectMatch(hit.from, hit.to);
+      if (fromPanel) focusSearch();
+    } finally {
+      finding = false;
+    }
+    return;
+  }
+  selectMatch(hit.from, hit.to);
+  if (fromPanel) focusSearch();
 }
 
 async function installMenu(): Promise<void> {
@@ -1212,6 +1452,12 @@ editor.dom.addEventListener("contextmenu", (event) => {
   if (!editing()) return;
   showCommandMenu(event);
 });
+editor.dom.addEventListener("click", (event) => {
+  if (event.button !== 0 || !editing() || previewEl.hidden) return;
+  const target = event.target;
+  if (!(target instanceof Node) || !editor.contentDOM.contains(target)) return;
+  scrollPreviewToCursor();
+});
 previewEl.addEventListener("click", (event) => {
   if (!editing()) return;
   event.preventDefault();
@@ -1242,14 +1488,16 @@ readGroup.addEventListener("click", () => {
   if (selectedId) void choose(selectedId, false);
 });
 
-for (const field of [fieldTitle, fieldSynopsis, fieldStatus, fieldRole]) {
+for (const field of [fieldTitle, fieldSynopsis, fieldStatus, fieldRole, ...unitInputs]) {
   field.addEventListener("change", () => {
     dirty = true;
+    const renumber = field === fieldRole || unitInputs.includes(field as HTMLInputElement);
     void flush().then(() => {
       const current = selected();
       if (!current) return;
+      if (renumber) renderOutline();
       const row = outlineEl.querySelector<HTMLElement>(`[data-id="${CSS.escape(current.node.header.id)}"] .title`);
-      if (row) row.textContent = current.node.header.title || current.node.slug;
+      if (row && !renumber) row.textContent = outlineTitle(current.node);
       paintWordCount();
       const synopsis = outlineEl.querySelector<HTMLElement>(`[data-id="${CSS.escape(current.node.header.id)}"] .synopsis`);
       if (synopsis) synopsis.textContent = current.node.header.synopsis;
@@ -1263,6 +1511,7 @@ bookTitle.addEventListener("change", () => {
   if (!book) return;
   void saveBookTitle(fs, book, bookTitle.value).then(() => {
     document.title = bookTitle.value || "Bookwriter";
+    renderOutline();
   });
 });
 

@@ -42,25 +42,77 @@ describe("export", () => {
     );
     const inwardNode = node(
       "section",
-      { id: "inward", title: "Inward", synopsis: "", status: "draft", role: "body" },
+      { id: "inward", title: "Inward", synopsis: "", status: "draft", role: "body", unit: "text" },
       inward.body,
     );
     const rule = node(
       "group",
-      { id: "the-rule", title: "The Rule", synopsis: "", status: "draft", role: "body" },
-      "The chapter opener.\n",
+      { id: "the-rule", title: "The Rule", synopsis: "", status: "draft", role: "body", unit: "section" },
+      "Inside the chapter.\n",
       [inwardNode],
     );
     const naming = node(
       "group",
-      { id: "naming", title: "Naming", synopsis: "", status: "draft", role: "body" },
-      "The part opener.\n",
+      { id: "naming", title: "Naming", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      "The chapter opener.\n",
       [rule],
     );
 
     const exported = exportBook([preface, naming]);
     expect(exported.warnings).toEqual([]);
     expect(exported.markdown.trimEnd()).toBe(example.trimEnd());
+  });
+
+  it("numbers parts and chapters in tree order", () => {
+    const scene = node(
+      "section",
+      { id: "scene", title: "Scene", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      "Nested.\n",
+    );
+    const one = node(
+      "group",
+      { id: "one", title: "One", synopsis: "", status: "draft", role: "body", unit: "part" },
+      "Part opener.\n",
+      [scene],
+    );
+    const loose = node(
+      "section",
+      { id: "loose", title: "Loose", synopsis: "", status: "draft", role: "body", unit: "text" },
+      "Loose.\n",
+    );
+    const preface = node(
+      "group",
+      { id: "preface", title: "Preface", synopsis: "", status: "draft", role: "front", unit: "chapter" },
+      "Front.\n",
+    );
+    const buried = node(
+      "section",
+      { id: "buried", title: "Buried", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      "Gone.\n",
+    );
+    const trash = node(
+      "group",
+      { id: "trash", title: "Trash", synopsis: "", status: "idea", role: "body", unit: "part" },
+      "",
+      [buried],
+    );
+    const two = node("group", { id: "two", title: "Two", synopsis: "", status: "draft", role: "body", unit: "chapter" }, "");
+    const note = node(
+      "section",
+      { id: "note", title: "Note", synopsis: "", status: "draft", role: "body", unit: "section" },
+      "Aside.\n",
+    );
+    const exported = exportBook([preface, loose, one, trash, two, note]);
+    expect(exported.warnings).toEqual([]);
+    expect(exported.markdown).toBe(
+      [
+        "# Preface {-}\n\nFront.",
+        "# Loose\n\nLoose.",
+        '<div class="page-break"></div>\n\n<p class="chapter-number">Part 1</p>\n\n# One\n\nPart opener.\n\n<div class="page-break"></div>\n\n<p class="chapter-number">Chapter 1</p>\n\n## Scene\n\nNested.',
+        '<div class="page-break"></div>\n\n<p class="chapter-number">Chapter 2</p>\n\n# Two',
+        '<div class="page-break"></div>\n\n# Note\n\nAside.',
+      ].join("\n\n"),
+    );
   });
 
   it("does not prefix a footnote written inside inline code", () => {
@@ -100,5 +152,34 @@ describe("export", () => {
     const exported = exportBook([group]);
     expect(exported.markdown).toContain("# Front {-}\n\n## Preface {-}\n\n###### Too deep {-}");
     expect(exported.warnings.some((warning) => warning.includes("level 7"))).toBe(true);
+  });
+
+  it("breaks where the page break is set", () => {
+    const scene = node(
+      "section",
+      { id: "scene", title: "Scene", synopsis: "", status: "draft", role: "body", break: true },
+      "On the next page.\n",
+    );
+    const quiet = node(
+      "group",
+      { id: "quiet", title: "Quiet", synopsis: "", status: "draft", role: "body", break: false },
+      "Same page.\n",
+      [scene],
+    );
+    const loose = node("section", { id: "loose", title: "Loose", synopsis: "", status: "draft", role: "body" }, "Before.\n");
+    const exported = exportBook([loose, quiet]);
+    expect(exported.markdown).toBe(
+      [
+        "# Loose\n\nBefore.",
+        "# Quiet\n\nSame page.",
+        '<div class="page-break"></div>\n\n## Scene\n\nOn the next page.',
+      ].join("\n\n"),
+    );
+    const opening = node(
+      "section",
+      { id: "scene", title: "Scene", synopsis: "", status: "draft", role: "body", break: true },
+      "Opens.\n",
+    );
+    expect(exportBook([opening]).markdown.startsWith("# Scene")).toBe(true);
   });
 });

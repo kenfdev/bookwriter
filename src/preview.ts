@@ -12,14 +12,17 @@ import rust from "highlight.js/lib/languages/rust";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
-import { transformBody } from "./export";
+import { divisionOpener, transformBody } from "./export";
 import {
   clampHeadingLevel,
   closesFence,
   codeSpanRanges,
+  divisions,
   effectiveFront,
   fenceMark,
   insideSpan,
+  startsNewPage,
+  type Division,
   type Fence,
   type TreeNode,
 } from "./model";
@@ -210,7 +213,7 @@ function missingNotes(body: string): string[] {
   return referenced.filter((label) => !defined.has(label));
 }
 
-export function renderSection(node: TreeNode, ancestors: TreeNode[]): Rendered {
+export function renderSection(node: TreeNode, ancestors: TreeNode[], division?: Division): Rendered {
   const front = effectiveFront(
     node.header.role,
     ancestors.map((ancestor) => ancestor.header),
@@ -240,18 +243,49 @@ export function renderSection(node: TreeNode, ancestors: TreeNode[]): Rendered {
   }
 
   const title = escapeHtml(node.header.title);
-  const klass = front ? "rendered-section front" : "rendered-section";
+  const opener = division ? divisionOpener(division) : "";
+  const page = startsNewPage(node) ? " break" : "";
+  const klass = `rendered-section${front ? " front" : ""}${node.kind === "group" ? " folder" : ""}${page}`;
   const kicker = front ? `<p class="kicker">Front matter</p>` : "";
-  const html = `<section class="${klass}" data-id="${escapeHtml(node.header.id)}" data-depth="${titleLevel.level}">${kicker}<h${titleLevel.level}>${title}</h${titleLevel.level}>${bodyHtml}</section>`;
+  const html = `<section class="${klass}" data-id="${escapeHtml(node.header.id)}" data-depth="${titleLevel.level}">${kicker}${opener}<h${titleLevel.level}>${title}</h${titleLevel.level}>${bodyHtml}</section>`;
   return { html, warnings };
 }
 
-export function renderGroup(node: TreeNode, ancestors: TreeNode[] = []): Rendered {
-  const own = renderSection(node, ancestors);
+/** Shown in the reading view wherever a node starts a new page. */
+function pageBreakMark(): string {
+  return `<div class="page-break" role="separator">Page break</div>`;
+}
+
+function renderNode(node: TreeNode, ancestors: TreeNode[], numbered: Map<string, Division>): Rendered {
+  if (node.kind === "group") return renderGroup(node, ancestors, numbered);
+  return renderSection(node, ancestors, numbered.get(node.header.id));
+}
+
+/** The manuscript in tree order, as one reading view. Trash is the caller's to leave out. */
+export function renderBook(nodes: TreeNode[]): Rendered {
+  const warnings: string[] = [];
+  const numbered = divisions(nodes);
+  const parts: string[] = [];
+  nodes.forEach((node, index) => {
+    if (index > 0 && startsNewPage(node)) parts.push(pageBreakMark());
+    const rendered = renderNode(node, [], numbered);
+    warnings.push(...rendered.warnings);
+    parts.push(rendered.html);
+  });
+  return { html: parts.join("\n"), warnings };
+}
+
+export function renderGroup(
+  node: TreeNode,
+  ancestors: TreeNode[] = [],
+  numbered: Map<string, Division> = divisions([node]),
+): Rendered {
+  const own = renderSection(node, ancestors, numbered.get(node.header.id));
   const warnings = [...own.warnings];
   const parts = [own.html];
   for (const child of node.children) {
-    const rendered = child.kind === "group" ? renderGroup(child, [...ancestors, node]) : renderSection(child, [...ancestors, node]);
+    if (startsNewPage(child)) parts.push(pageBreakMark());
+    const rendered = renderNode(child, [...ancestors, node], numbered);
     parts.push(rendered.html);
     warnings.push(...rendered.warnings);
   }

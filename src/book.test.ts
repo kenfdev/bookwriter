@@ -77,6 +77,8 @@ describe("the book folder", () => {
     const group = book.nodes[0];
     expect(group.kind).toBe("group");
     expect(group.header.id).toBe("the-rule");
+    expect(group.header.unit).toBe("section");
+    expect(group.children[0].header.unit).toBe("text");
     expect(group.children.map((child) => child.header.id)).toEqual(["inward", "boundaries"]);
 
     await moveNode(fs, book, edge, inward, "before");

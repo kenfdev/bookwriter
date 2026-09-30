@@ -2,12 +2,22 @@ export const STATUSES = ["idea", "draft", "revise", "done"] as const;
 export type Status = (typeof STATUSES)[number];
 export type Role = "front" | "body";
 
+export const UNITS = ["part", "chapter", "section", "text"] as const;
+export type Unit = (typeof UNITS)[number];
+
 export type Header = {
   id: string;
   title: string;
   synopsis: string;
   status: Status;
   role: Role;
+  /** How this node opens. Absent on files written before units existed. */
+  unit?: Unit;
+  /**
+   * Legacy page break from files that have no unit.
+   * `true` is read as a section and `false` as text. Not written once `unit` is set.
+   */
+  break?: boolean;
 };
 
 export type TreeNode = {
@@ -89,6 +99,69 @@ export function effectiveFront(role: Role, ancestors: { role: Role }[]): boolean
   return role === "front" || ancestors.some((ancestor) => ancestor.role === "front");
 }
 
+export type Division = { unit: "part" | "chapter"; number: number };
+
+/** "Part N" or "Chapter N". The number is derived and is not stored. */
+export function divisionLabel(division: Division): string {
+  const name = division.unit === "part" ? "Part" : "Chapter";
+  return `${name} ${division.number}`;
+}
+
+/**
+ * The unit a node opens as.
+ * A missing unit keeps an old `break` flag (`true` is a section, `false` is text).
+ * With neither, a folder is a section and a section file is text, and neither is numbered.
+ */
+export function effectiveUnit(node: {
+  kind: TreeNode["kind"];
+  header: { unit?: Unit; break?: boolean };
+}): Unit {
+  if (node.header.unit) return node.header.unit;
+  if (node.header.break === false) return "text";
+  if (node.header.break === true) return "section";
+  return node.kind === "group" ? "section" : "text";
+}
+
+/** A part, a chapter, and a section start a new page. Text does not. */
+export function startsNewPage(node: {
+  kind: TreeNode["kind"];
+  header: { unit?: Unit; break?: boolean };
+}): boolean {
+  return effectiveUnit(node) !== "text";
+}
+
+/**
+ * Part numbers and chapter numbers, each in tree order through the whole manuscript.
+ * The two sequences are independent. Front matter and the trash take no number.
+ */
+export function divisions(roots: TreeNode[]): Map<string, Division> {
+  const found = new Map<string, Division>();
+  let part = 0;
+  let chapter = 0;
+  const visit = (nodes: TreeNode[], ancestors: TreeNode[]) => {
+    for (const node of nodes) {
+      if (node.header.id === "trash") continue;
+      const unit = effectiveUnit(node);
+      const front = effectiveFront(
+        node.header.role,
+        ancestors.map((ancestor) => ancestor.header),
+      );
+      if (!front && (unit === "part" || unit === "chapter")) {
+        if (unit === "part") {
+          part += 1;
+          found.set(node.header.id, { unit, number: part });
+        } else {
+          chapter += 1;
+          found.set(node.header.id, { unit, number: chapter });
+        }
+      }
+      visit(node.children, [...ancestors, node]);
+    }
+  };
+  visit(roots, []);
+  return found;
+}
+
 export function clampHeadingLevel(level: number): { level: number; clamped: boolean } {
   if (level > 6) return { level: 6, clamped: true };
   if (level < 1) return { level: 1, clamped: true };
@@ -137,17 +210,33 @@ function defaultHeader(partial: Partial<Header>): Header {
 }
 
 export function serializeSection(header: Header, body: string): string {
-  const yaml = [
+  const lines = [
     "---",
     `id: ${quoteScalar(header.id)}`,
     `title: ${quoteScalar(header.title)}`,
     `synopsis: ${quoteScalar(header.synopsis)}`,
     `status: ${header.status}`,
     `role: ${header.role}`,
-    "---",
-    "",
-  ].join("\n");
-  return yaml + body;
+  ];
+  if (header.unit) lines.push(`unit: ${header.unit}`);
+  else if (typeof header.break === "boolean") lines.push(`break: ${header.break ? "true" : "false"}`);
+  lines.push("---", "");
+  return lines.join("\n") + body;
+}
+
+function readUnit(raw: string | undefined, warnings: string[]): Unit | undefined {
+  if (raw === undefined) return undefined;
+  if ((UNITS as readonly string[]).includes(raw)) return raw as Unit;
+  warnings.push(`Unit "${raw}" is not part, chapter, section, or text.`);
+  return undefined;
+}
+
+function readBreak(raw: string | undefined, warnings: string[]): boolean | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  warnings.push(`Page break "${raw}" is not true or false.`);
+  return undefined;
 }
 
 export function parseSection(text: string): ParsedSection {
@@ -181,6 +270,8 @@ export function parseSection(text: string): ParsedSection {
     warnings.push(`Role "${role}" is not front or body.`);
     role = "body";
   }
+  const unit = readUnit(fields.has("unit") ? fields.get("unit") : undefined, warnings);
+  const pageBreak = readBreak(fields.has("break") ? fields.get("break") : undefined, warnings);
   return {
     header: {
       id: fields.get("id") || "section",
@@ -188,6 +279,8 @@ export function parseSection(text: string): ParsedSection {
       synopsis: fields.get("synopsis") ?? "",
       status,
       role,
+      ...(unit === undefined ? {} : { unit }),
+      ...(pageBreak === undefined ? {} : { break: pageBreak }),
     },
     body: matched[2],
     warnings,

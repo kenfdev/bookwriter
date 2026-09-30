@@ -2,9 +2,13 @@ import {
   clampHeadingLevel,
   closesFence,
   codeSpanRanges,
+  divisionLabel,
+  divisions,
   effectiveFront,
   fenceMark,
   insideSpan,
+  startsNewPage,
+  type Division,
   type Fence,
   type TreeNode,
 } from "./model";
@@ -80,22 +84,50 @@ export function transformBody(body: string, options: TransformOptions): Transfor
   return { text: out.join("\n"), warnings };
 }
 
-function titleHeading(depth: number, title: string, front: boolean, warnings: string[]): string {
+/** Class on the centered "Part N" or "Chapter N" line. The reading view and the PDF both recognize it. */
+export const CHAPTER_NUMBER_CLASS = "chapter-number";
+
+/** Class on the break that starts a node on a new page. */
+export const PAGE_BREAK_CLASS = "page-break";
+
+export function divisionOpener(division: Division): string {
+  return `<p class="${CHAPTER_NUMBER_CLASS}">${divisionLabel(division)}</p>`;
+}
+
+export function pageBreak(): string {
+  return `<div class="${PAGE_BREAK_CLASS}"></div>`;
+}
+
+function titleHeading(
+  depth: number,
+  title: string,
+  front: boolean,
+  warnings: string[],
+  division?: Division,
+): string {
   const clamped = clampHeadingLevel(depth);
   if (clamped.clamped && depth > 6) {
     warnings.push(`"${title}" is deeper than heading level 6 and was written at level 6.`);
   }
   const marker = front ? " {-}" : "";
-  return `${"#".repeat(clamped.level)} ${title}${marker}`;
+  const heading = `${"#".repeat(clamped.level)} ${title}${marker}`;
+  if (!division) return heading;
+  return `${divisionOpener(division)}\n\n${heading}`;
 }
 
-function exportNode(node: TreeNode, ancestors: TreeNode[], warnings: string[]): string {
+function exportNode(
+  node: TreeNode,
+  ancestors: TreeNode[],
+  warnings: string[],
+  numbered: Map<string, Division>,
+  followed: boolean,
+): string {
   const front = effectiveFront(
     node.header.role,
     ancestors.map((ancestor) => ancestor.header),
   );
   const depth = ancestors.length + 1;
-  const heading = titleHeading(depth, node.header.title, front, warnings);
+  const heading = titleHeading(depth, node.header.title, front, warnings, numbered.get(node.header.id));
   const transformed = transformBody(node.body, {
     depth,
     sectionId: node.header.id,
@@ -106,16 +138,19 @@ function exportNode(node: TreeNode, ancestors: TreeNode[], warnings: string[]): 
   const own = body.length > 0 ? `${heading}\n\n${body}` : heading;
   const parts = [own];
   for (const child of node.children) {
-    parts.push(exportNode(child, [...ancestors, node], warnings));
+    parts.push(exportNode(child, [...ancestors, node], warnings, numbered, true));
   }
-  return parts.join("\n\n");
+  const text = parts.join("\n\n");
+  if (startsNewPage(node) && followed) return `${pageBreak()}\n\n${text}`;
+  return text;
 }
 
 export function exportBook(nodes: TreeNode[]): { markdown: string; warnings: string[] } {
   const warnings: string[] = [];
+  const numbered = divisions(nodes);
   const markdown = nodes
     .filter((node) => node.header.id !== "trash")
-    .map((node) => exportNode(node, [], warnings))
+    .map((node, index) => exportNode(node, [], warnings, numbered, index > 0))
     .join("\n\n");
   return { markdown, warnings };
 }

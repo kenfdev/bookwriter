@@ -211,7 +211,7 @@ export async function createNode(
   const id = uniqueId(title, collectIds(book.nodes));
   const prefix = nextPrefix(prefixes);
   const entryName = kind === "section" ? `${prefix}-${id}.md` : `${prefix}-${id}`;
-  const header: Header = { id, title, synopsis: "", status: "idea", role: "body" };
+  const header: Header = { id, title, synopsis: "", status: "idea", role: "body", unit: kind === "group" ? "section" : "text" };
   const text = serializeSection(header, "");
   if (kind === "group") {
     const groupDir = joinPath(dir, entryName);
