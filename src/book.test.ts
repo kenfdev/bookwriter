@@ -1,8 +1,8 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createNode, deleteNode, loadBook, moveNode, planMove, saveNode } from "./book";
+import { createNode, deleteNode, emptyTrash, loadBook, moveNode, planMove, saveNode } from "./book";
 import { exportBook } from "./export";
 import { filePath, type TreeNode } from "./model";
 import { nodeFs } from "./nodeFs";
@@ -123,5 +123,46 @@ describe("the book folder", () => {
     await moveNode(fs, book, opening, first.header.id, "before");
     book = await loadBook(fs, root);
     expect(book.nodes[0].children.map((child) => child.header.id)).toEqual(["opening", "inward", "after-inward"]);
+  });
+
+  it("empties the trash and leaves the rest of the manuscript", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bookwriter-"));
+    const fs = nodeFs();
+    await fs.mkdir(join(root, "manuscript"));
+    await fs.writeText(join(root, "book.yaml"), "title: Trial\n");
+
+    let book = await loadBook(fs, root);
+    const chapter = await createNode(fs, book, null, "group", "The Rule");
+    book = await loadBook(fs, root);
+    await createNode(fs, book, chapter, "section", "Inward");
+    const gone = await createNode(fs, book, chapter, "section", "Boundaries");
+    const folder = await createNode(fs, book, chapter, "group", "Nested");
+    book = await loadBook(fs, root);
+    const buried = await createNode(fs, book, folder, "section", "Buried");
+    book = await loadBook(fs, root);
+
+    await deleteNode(fs, book, gone);
+    book = await loadBook(fs, root);
+    await deleteNode(fs, book, folder);
+    book = await loadBook(fs, root);
+    await fs.writeText(join(root, "manuscript", "trash", "notes.txt"), "stray");
+
+    const trashed = book.nodes.find((node) => node.header.id === "trash");
+    const removed = trashed?.children.map((child) => join(child.dir, child.entryName)) ?? [];
+    const buriedPath = filePath(trashed!.children.flatMap((child) => child.children).find((child) => child.header.id === buried)!);
+    expect(trashed?.children.map((child) => child.header.id).sort()).toEqual(["boundaries", "nested"]);
+
+    await emptyTrash(fs, book);
+    book = await loadBook(fs, root);
+    expect(book.nodes.find((node) => node.header.id === "trash")?.children).toEqual([]);
+    expect(book.nodes[0].children.map((child) => child.header.id)).toEqual(["inward"]);
+    await expect(fs.readText(join(root, "manuscript", "trash", "notes.txt"))).rejects.toThrow();
+    await expect(access(buriedPath)).rejects.toThrow();
+    for (const path of removed) await expect(access(path)).rejects.toThrow();
+    expect(await fs.readText(join(root, "manuscript", "trash", "_index.md"))).toContain("id: trash");
+
+    await emptyTrash(fs, book);
+    book = await loadBook(fs, root);
+    expect(book.nodes.find((node) => node.header.id === "trash")?.children).toEqual([]);
   });
 });

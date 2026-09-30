@@ -66,6 +66,25 @@ fn make_dir(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn remove_path(path: String) -> Result<(), String> {
+    fs::remove_dir_all(&path)
+        .or_else(|_| remove_one(&path))
+        .map_err(|error| error.to_string())
+}
+
+fn remove_one(path: &str) -> Result<(), std::io::Error> {
+    fs::remove_file(path).or_else(ignore_missing)
+}
+
+fn ignore_missing(error: std::io::Error) -> Result<(), std::io::Error> {
+    if error.kind() == ErrorKind::NotFound {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[tauri::command]
 fn canonicalize_path(path: String) -> Result<String, String> {
     fs::canonicalize(&path)
         .map(|found| found.to_string_lossy().into_owned())
@@ -186,6 +205,7 @@ pub fn run() {
             make_dir,
             canonicalize_path,
             move_file,
+            remove_path,
             allow_book,
             startup_book_path
         ])
@@ -257,6 +277,23 @@ mod tests {
         assert!(remove_copied_source(stuck.to_str().unwrap(), leftover.to_str().unwrap()).is_err());
         assert!(!leftover.exists());
         assert!(copy_then_remove(dir.join("gone.md").to_str().unwrap(), dir.join("out.md").to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn removes_a_file_or_a_directory_and_ignores_a_missing_path() {
+        let dir = temp_dir();
+        let file = dir.join("one.md");
+        fs::write(&file, "body").unwrap();
+        remove_path(file.to_string_lossy().into_owned()).unwrap();
+        assert!(!file.exists());
+
+        let nested = dir.join("folder").join("inner");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("note.md"), "x").unwrap();
+        remove_path(dir.join("folder").to_string_lossy().into_owned()).unwrap();
+        assert!(!dir.join("folder").exists());
+
+        remove_path(dir.join("missing").to_string_lossy().into_owned()).unwrap();
     }
 
     #[test]

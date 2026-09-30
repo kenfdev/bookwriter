@@ -47,5 +47,8 @@ export function nodeFs(): Fs {
     async mkdir(path) {
       await mkdir(path, { recursive: true });
     },
+    async remove(path) {
+      await rm(path, { recursive: true, force: true });
+    },
   };
 }

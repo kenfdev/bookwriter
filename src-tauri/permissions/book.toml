@@ -10,6 +10,7 @@ commands.allow = [
   "make_dir",
   "canonicalize_path",
   "move_file",
+  "remove_path",
   "allow_book",
   "startup_book_path",
 ]

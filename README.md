@@ -69,7 +69,7 @@ Under `manuscript/`:
 
 - A directory is a folder of pieces. `_index.md` inside it is that folder's own prose. The body may be empty.
 - Any other `.md` file is a section.
-- `trash/` holds deleted pieces. Export and the reading view skip it.
+- `trash/` holds deleted pieces. Empty trash removes those pieces and leaves the folder. Export and the reading view skip it.
 - Sibling order is the numeric prefix: `010`, `020`, `030`. The words after the prefix are a name taken from the title when the piece is created. Renaming the title does not rename the file. Dragging rewrites the prefixes in that directory.
 - Pictures live in `images/`. A picture in the text is a path from the book folder, such as `images/bridge.jpg`.
 

@@ -29,6 +29,8 @@ export interface Fs {
   moveFile(from: string, to: string): Promise<void>;
   canonicalize(path: string): Promise<string>;
   mkdir(path: string): Promise<void>;
+  /** Remove a file or a directory. A missing path is not an error. */
+  remove(path: string): Promise<void>;
 }
 
 export type Book = {
@@ -385,6 +387,28 @@ export async function deleteNode(fs: Fs, book: Book, id: string): Promise<void> 
   const target = findNode(book.nodes, id);
   if (!target || isTrash(target.node) || target.ancestors.some(isTrash)) return;
   await moveNode(fs, book, id, TRASH_ID, "inside");
+}
+
+export async function emptyTrash(fs: Fs, book: Book): Promise<void> {
+  const dir = trashDirectory(book);
+  await removeTrashEntries(fs, dir, await fs.readDir(dir));
+}
+
+function trashDirectory(book: Book): string {
+  return joinPath(book.root, "manuscript", TRASH_ID);
+}
+
+async function removeTrashEntries(fs: Fs, dir: string, entries: DirEntry[]): Promise<void> {
+  for (const entry of entries) await removeTrashEntry(fs, dir, entry);
+}
+
+async function removeTrashEntry(fs: Fs, dir: string, entry: DirEntry): Promise<void> {
+  if (trashHeader(entry.name)) return;
+  await fs.remove(joinPath(dir, entry.name));
+}
+
+function trashHeader(name: string): boolean {
+  return name === "_index.md";
 }
 
 export function manuscriptNodes(nodes: TreeNode[]): TreeNode[] {

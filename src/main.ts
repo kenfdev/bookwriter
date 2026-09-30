@@ -12,6 +12,7 @@ import { Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/men
 import {
   createNode,
   deleteNode,
+  emptyTrash,
   isTrash,
   loadBook,
   manuscriptNodes,
@@ -1552,8 +1553,17 @@ function nodeInTrash(node: TreeNode, ancestors: TreeNode[]): boolean {
 }
 
 function contextActions(node: TreeNode, inTrash: boolean): ContextAction[] {
+  if (isTrash(node)) return trashActions();
+  return rowActions(node, inTrash);
+}
+
+function rowActions(node: TreeNode, inTrash: boolean): ContextAction[] {
   const actions = node.kind === "group" ? groupActions(node) : sectionActions(node);
   return withDelete(actions, node, inTrash);
+}
+
+function trashActions(): ContextAction[] {
+  return [{ label: "Empty trash", run: () => emptyTheTrash() }];
 }
 
 function groupActions(node: TreeNode): ContextAction[] {
@@ -1697,6 +1707,52 @@ async function finishTextBelow(sectionId: string, title: string, parent: TreeNod
   editingProse = false;
   await refresh(id);
   await choose(id, false);
+}
+
+async function emptyTheTrash(): Promise<void> {
+  if (!book) return;
+  await clearTrash();
+}
+
+async function clearTrash(): Promise<void> {
+  await keepOpenEdits();
+  const next = selectionAfterEmpty();
+  releaseDeletedProse(next);
+  await emptyTrash(fs, book!);
+  await refresh(next);
+}
+
+async function keepOpenEdits(): Promise<void> {
+  if (openInsideTrash()) cancelSave();
+  else await flush();
+}
+
+function releaseDeletedProse(next: string | null): void {
+  if (next !== selectedId) editingProse = false;
+}
+
+function selectionAfterEmpty(): string | null {
+  if (openInsideTrash()) return outsideTrash();
+  return selectedId;
+}
+
+function openInsideTrash(): boolean {
+  const current = selected();
+  return current != null && insideTrash(current);
+}
+
+function insideTrash(current: Selection): boolean {
+  return current.ancestors.some(isTrash);
+}
+
+function outsideTrash(): string | null {
+  const current = selected();
+  return ancestorOutside(current) ?? firstManuscriptId();
+}
+
+function ancestorOutside(current: Selection | null): string | undefined {
+  if (!current) return undefined;
+  return survivingAncestor(current);
 }
 
 async function deleteItem(id: string): Promise<void> {

@@ -132,6 +132,8 @@ The outline is the home screen. The book is the top row, and it is selected when
 
 Dragging a row changes the order. Dropping a row onto a group makes it a child of that group. Both operations are prefix rewrites, as described above.
 
+Right-clicking the trash row offers Empty trash. That deletes the pieces in the trash. The trash folder remains.
+
 There is no corkboard and no index-card view.
 
 ## Editor

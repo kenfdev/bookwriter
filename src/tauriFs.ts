@@ -10,6 +10,7 @@ export const tauriFs: Fs = {
   moveFile: (from, to) => invoke("move_file", { from, to }),
   canonicalize: (path) => invoke("canonicalize_path", { path }),
   mkdir: (path) => invoke("make_dir", { path }),
+  remove: (path) => invoke("remove_path", { path }),
 };
 
 /** Let the preview load picture files from this book folder. */
