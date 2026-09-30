@@ -38,6 +38,8 @@ The book is a folder of Pandoc Markdown files. The folder is the only stored for
 ```text
 my-book/
   book.yaml
+  images/
+    bridge.jpg
   manuscript/
     010-front-matter/
       _index.md
@@ -70,6 +72,8 @@ The slug is lowercase words separated by hyphens, with punctuation removed. The 
 If a directory would need a prefix past `990`, the prefixes in that directory gain another digit (`0100`, `0200`, …).
 
 Files are UTF-8 with LF line endings.
+
+Pictures live in `images/`, beside `manuscript/`. A picture path in a text is relative to the book folder. `images/bridge.jpg` is that file.
 
 ## A section file
 
@@ -127,7 +131,7 @@ The marks stay visible. Highlighting shows a heading line as a heading and a fen
 
 The open section has a rendered preview beside the Markdown. It can be shown or hidden.
 
-The preview is drawn from the editor buffer as the buffer changes, including text that has not been saved. It shows that section as export will show it. The title is a heading at the section's depth. Body headings are shifted by that same depth. A front-matter section shows its headings unnumbered. Code is highlighted. Footnotes are shown as notes, numbered in the order they appear in the section. A broken fence or a footnote reference with no definition is visible in the preview.
+The preview is drawn from the editor buffer as the buffer changes, including text that has not been saved. It shows that section as export will show it. The title is a heading at the section's depth. Body headings are shifted by that same depth. A front-matter section shows its headings unnumbered. Code is highlighted. Footnotes are shown as notes, numbered in the order they appear in the section. A picture path names a file in the book folder, and the preview shows that file. A broken fence or a footnote reference with no definition is visible in the preview.
 
 Typing stays in the Markdown editor. The preview is a view of the buffer.
 
@@ -135,7 +139,7 @@ Typing stays in the Markdown editor. The preview is a view of the buffer.
 
 A command inserts the characters for one construct. The writer recalls the name. The command recalls the syntax. The command writes into the buffer at the cursor and does not rebuild the section. Existing text is left as it stands, including existing footnote numbers.
 
-The menu and the command palette list these eleven commands. The palette finds a command by its name, so "foot" reaches Footnote.
+The menu and the command palette list these twelve commands. The palette finds a command by its name, so "foot" reaches Footnote and "pic" reaches Picture.
 
 | Command | What it inserts |
 |---|---|
@@ -143,6 +147,7 @@ The menu and the command palette list these eleven commands. The palette finds a
 | Strong | `**…**` around the selection |
 | Inline code | `` `…` `` around the selection |
 | Link | `[selection](url)` |
+| Picture | `![selection](images/file){width=100%}`, and moves that file into the book |
 | Subsection | `# ` at the start of the current line |
 | Lower subsection | `## ` at the start of the current line |
 | Bullet list | `- ` at the start of the current line |
@@ -157,7 +162,9 @@ Code block takes its language tag from the most recent fenced block already in t
 
 Footnote scans the open section for `[^n]` definitions and uses the next free number. The cursor is left after `[^n]: `, ready for the note. Definitions already in the file keep their numbers.
 
-One reminder page lists these same eleven commands and the characters each one inserts. The page and the menu match.
+Picture opens a file chooser in the book folder. The chosen file is moved into `images/`. The path in the mark is relative to the book folder. The mark always ends with `{width=100%}`. A file already in `images/` stays where it is. A file whose name is already there is saved as `name-2`, `name-3`, and so on. With a selection, the selection is the caption and the cursor is left after the mark. With nothing selected, the cursor is left between the brackets.
+
+One reminder page lists these same twelve commands and the characters each one inserts. The page and the menu match.
 
 Any other Pandoc construct can still be typed by hand. The menu, the palette, and the reminder page cover this list only.
 
@@ -217,7 +224,7 @@ class Foo {
 [^inward-1]: Toward higher-level policy.
 ````
 
-The application stops at that Markdown file. PDF, EPUB, and Word are Pandoc's job, run on the exported file. Bookwriter does not grow a compile engine of its own.
+The application stops at that Markdown file. PDF, EPUB, and Word are Pandoc's job, run on the exported file. Picture paths are left as written, relative to the book folder. Run Pandoc from the book folder so a picture path resolves. Bookwriter does not grow a compile engine of its own.
 
 ## Application
 
@@ -227,12 +234,13 @@ The window is a Tauri window: a dock icon, a menu bar, and direct access to the 
 
 The body editor is CodeMirror. It edits the Markdown body, and the buffer is the file. The section preview is drawn from that buffer. The rendered chapter view is the reading view of a group.
 
-The local program does five things with the folder:
+The local program does these things with the folder:
 
 - list a directory
 - read a file
 - write a file
 - rename siblings when the order changes
+- move a picture into `images/`
 - concatenate the tree for export
 
 ## Left out
@@ -242,7 +250,7 @@ Recorded so this spec does not quietly grow back into Scrivener.
 - Corkboard, index cards, and a second layout of the same tree
 - A rendered editor that writes Markdown back out on save
 - Commands that rebuild a section, including renumbering footnotes already in the file
-- A menu or reminder for Pandoc constructs beyond the eleven markup commands
+- A menu or reminder for Pandoc constructs beyond the twelve markup commands
 - Compile presets, section types, separators, and placeholders
 - Custom metadata fields beyond the five in the header
 - A research bin of PDFs and clippings

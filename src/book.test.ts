@@ -114,5 +114,12 @@ describe("the book folder", () => {
     await moveNode(fs, book, below, "inward", "after");
     book = await loadBook(fs, root);
     expect(book.nodes[0].children.map((child) => child.header.id)).toEqual(["inward", "after-inward"]);
+
+    const opening = await createNode(fs, book, chapter, "section", "Opening");
+    book = await loadBook(fs, root);
+    const first = book.nodes[0].children[0];
+    await moveNode(fs, book, opening, first.header.id, "before");
+    book = await loadBook(fs, root);
+    expect(book.nodes[0].children.map((child) => child.header.id)).toEqual(["opening", "inward", "after-inward"]);
   });
 });

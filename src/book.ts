@@ -23,6 +23,9 @@ export interface Fs {
   writeText(path: string, text: string): Promise<void>;
   readDir(path: string): Promise<DirEntry[]>;
   rename(from: string, to: string): Promise<void>;
+  /** Move one file, including across devices. Creates the destination directory. */
+  moveFile(from: string, to: string): Promise<void>;
+  canonicalize(path: string): Promise<string>;
   mkdir(path: string): Promise<void>;
 }
 

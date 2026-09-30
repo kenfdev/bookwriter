@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::PathBuf;
+use tauri::Manager;
 
 #[derive(Serialize)]
 struct DirItem {
@@ -53,6 +55,39 @@ fn make_dir(path: String) -> Result<(), String> {
     fs::create_dir_all(&path).map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn canonicalize_path(path: String) -> Result<String, String> {
+    fs::canonicalize(&path)
+        .map(|found| found.to_string_lossy().into_owned())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn move_file(from: String, to: String) -> Result<(), String> {
+    if let Some(parent) = PathBuf::from(&to).parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    match fs::rename(&from, &to) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::CrossesDevices => {
+            fs::copy(&from, &to).map_err(|copy_error| copy_error.to_string())?;
+            if let Err(remove_error) = fs::remove_file(&from) {
+                let _ = fs::remove_file(&to);
+                return Err(remove_error.to_string());
+            }
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn allow_book(app: tauri::AppHandle, root: String) -> Result<(), String> {
+    app.asset_protocol_scope()
+        .allow_directory(&root, true)
+        .map_err(|error| error.to_string())
+}
+
 fn spec_book_path() -> Option<String> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../spec-book");
     path.canonicalize()
@@ -87,12 +122,16 @@ fn startup_book_path() -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             read_text,
             write_text,
             read_dir,
             rename_path,
             make_dir,
+            canonicalize_path,
+            move_file,
+            allow_book,
             startup_book_path
         ])
         .run(tauri::generate_context!())

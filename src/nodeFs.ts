@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Fs } from "./book";
 
@@ -21,6 +21,25 @@ export function nodeFs(): Fs {
     async rename(from, to) {
       await mkdir(dirname(to), { recursive: true });
       await rename(from, to);
+    },
+    async moveFile(from, to) {
+      await mkdir(dirname(to), { recursive: true });
+      try {
+        await rename(from, to);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EXDEV") throw error;
+        await copyFile(from, to);
+        try {
+          await rm(from);
+        } catch (removeError) {
+          await rm(to);
+          throw removeError;
+        }
+      }
+    },
+    async canonicalize(path) {
+      return realpath(path);
     },
     async mkdir(path) {
       await mkdir(path, { recursive: true });

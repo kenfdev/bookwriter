@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import { COMMANDS, applyCommand, latestLanguage } from "./commands";
 
 describe("markup commands", () => {
-  it("lists the eleven constructs, and foot finds Footnote", () => {
+  it("lists the twelve constructs, and foot finds Footnote", () => {
     expect(COMMANDS.map((command) => command.name)).toEqual([
       "Emphasis",
       "Strong",
       "Inline code",
       "Link",
+      "Picture",
       "Subsection",
       "Lower subsection",
       "Bullet list",
@@ -16,9 +17,10 @@ describe("markup commands", () => {
       "Code block",
       "Footnote",
     ]);
-    const query = "foot";
-    const found = COMMANDS.filter((command) => command.name.toLowerCase().includes(query));
-    expect(found.map((command) => command.name)).toEqual(["Footnote"]);
+    const foot = COMMANDS.filter((command) => command.name.toLowerCase().includes("foot"));
+    expect(foot.map((command) => command.name)).toEqual(["Footnote"]);
+    const picture = COMMANDS.filter((command) => command.name.toLowerCase().includes("pic"));
+    expect(picture.map((command) => command.name)).toEqual(["Picture"]);
   });
 
   it("wraps a selection and parks the cursor inside empty marks", () => {
@@ -34,9 +36,20 @@ describe("markup commands", () => {
     expect(link.text).toBe("[word](url)");
     expect(link.head).toBe(link.text.length);
 
-    const bare = applyCommand("inline-code", "x", 1, 1);
-    expect(bare.text).toBe("x``");
-    expect(bare.head).toBe(2);
+    const picture = applyCommand("picture", "See the bridge today.", 8, 14, "", "images/bridge.jpg");
+    expect(picture.text).toBe("See the ![bridge](images/bridge.jpg){width=100%} today.");
+    expect(picture.head).toBe("See the ![bridge](images/bridge.jpg){width=100%}".length);
+
+    const bare = applyCommand("picture", "See.", 4, 4, "", "images/my photo.jpg");
+    expect(bare.text).toBe("See.![](<images/my photo.jpg>){width=100%}");
+    expect(bare.head).toBe(6);
+
+    const escaped = applyCommand("picture", "A]b", 0, 3, "", "images/a.jpg");
+    expect(escaped.text).toBe("![A\\]b](images/a.jpg){width=100%}");
+
+    const code = applyCommand("inline-code", "x", 1, 1);
+    expect(code.text).toBe("x``");
+    expect(code.head).toBe(2);
   });
 
   it("prefixes the current line", () => {

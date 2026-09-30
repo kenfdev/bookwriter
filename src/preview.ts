@@ -65,6 +65,66 @@ const md = new MarkdownIt({
 });
 md.use(footnote);
 
+md.core.ruler.push("image_size", (state) => {
+  for (const token of state.tokens) {
+    if (token.type !== "inline" || !token.children) continue;
+    const children = token.children;
+    for (let i = 0; i < children.length; i++) {
+      const image = children[i];
+      const next = children[i + 1];
+      if (image.type !== "image" || next?.type !== "text") continue;
+      const match = /^\{([^{}]*)\}/.exec(next.content);
+      if (!match) continue;
+      const style = imageSizeStyle(match[1]);
+      if (!style) continue;
+      image.attrSet("style", style);
+      const rest = next.content.slice(match[0].length);
+      if (rest.length === 0) children.splice(i + 1, 1);
+      else next.content = rest;
+    }
+  }
+});
+
+function cssLength(value: string): string | null {
+  if (!/^[\d.]+(%|cm|mm|in|px|pt|em|rem)?$/.test(value)) return null;
+  if (/^[\d.]+$/.test(value)) return `${value}px`;
+  return value;
+}
+
+function imageSizeStyle(block: string): string | null {
+  const width = /(?:^|\s)width=(\S+)/.exec(block);
+  const height = /(?:^|\s)height=(\S+)/.exec(block);
+  const parts: string[] = [];
+  const widthValue = width ? cssLength(width[1]) : null;
+  const heightValue = height ? cssLength(height[1]) : null;
+  if (widthValue) parts.push(`width: ${widthValue}`);
+  if (heightValue) parts.push(`height: ${heightValue}`);
+  return parts.length === 0 ? null : parts.join("; ");
+}
+
+const renderToken = md.renderer.renderToken.bind(md.renderer);
+md.renderer.renderToken = (tokens, idx, options) => {
+  const token = tokens[idx];
+  if (token.nesting === 1 && token.map) {
+    token.attrSet("data-line", String(token.map[0]));
+    token.attrSet("data-end", String(token.map[1]));
+  }
+  return renderToken(tokens, idx, options);
+};
+
+function stampBlock(name: string): void {
+  const rule = md.renderer.rules[name];
+  if (!rule) return;
+  md.renderer.rules[name] = (tokens, idx, options, env, self) => {
+    const html = rule(tokens, idx, options, env, self);
+    const map = tokens[idx].map;
+    if (!map) return html;
+    return html.replace(/^(\s*)<([A-Za-z0-9-]+)/, `$1<$2 data-line="${map[0]}" data-end="${map[1]}"`);
+  };
+}
+stampBlock("fence");
+stampBlock("code_block");
+
 export type Rendered = {
   html: string;
   warnings: string[];
@@ -182,7 +242,7 @@ export function renderSection(node: TreeNode, ancestors: TreeNode[]): Rendered {
   const title = escapeHtml(node.header.title);
   const klass = front ? "rendered-section front" : "rendered-section";
   const kicker = front ? `<p class="kicker">Front matter</p>` : "";
-  const html = `<section class="${klass}" data-depth="${titleLevel.level}">${kicker}<h${titleLevel.level}>${title}</h${titleLevel.level}>${bodyHtml}</section>`;
+  const html = `<section class="${klass}" data-id="${escapeHtml(node.header.id)}" data-depth="${titleLevel.level}">${kicker}<h${titleLevel.level}>${title}</h${titleLevel.level}>${bodyHtml}</section>`;
   return { html, warnings };
 }
 

@@ -5,6 +5,7 @@ export type CommandId =
   | "strong"
   | "inline-code"
   | "link"
+  | "picture"
   | "subsection"
   | "lower-subsection"
   | "bullet"
@@ -26,6 +27,7 @@ export const COMMANDS: MarkupCommand[] = [
   { id: "strong", name: "Strong", inserts: "**…** around the selection", accelerator: "CmdOrCtrl+B" },
   { id: "inline-code", name: "Inline code", inserts: "`…` around the selection", accelerator: "CmdOrCtrl+E" },
   { id: "link", name: "Link", inserts: "[selection](url)" },
+  { id: "picture", name: "Picture", inserts: "![selection](images/file){width=100%}, and moves that file into the book" },
   { id: "subsection", name: "Subsection", inserts: "# at the start of the current line" },
   { id: "lower-subsection", name: "Lower subsection", inserts: "## at the start of the current line" },
   { id: "bullet", name: "Bullet list", inserts: "- at the start of the current line" },
@@ -141,12 +143,32 @@ function insertFootnote(text: string, anchor: number, head: number): EditResult 
   return { text: next, anchor: headAt, head: headAt };
 }
 
+function markdownDestination(relative: string): string {
+  const clean = relative.replace(/[\r\n]/g, "");
+  if (clean === "" || /[\s()]/.test(clean)) return `<${clean.replace(/[<>]/g, "")}>`;
+  return clean;
+}
+
+function insertPicture(text: string, anchor: number, head: number, relative: string): EditResult {
+  const { start, end } = rangeOf(text, anchor, head);
+  const caption = text.slice(start, end).replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+  const mark = `![${caption}](${markdownDestination(relative)}){width=100%}`;
+  const next = text.slice(0, start) + mark + text.slice(end);
+  if (caption.length === 0) {
+    const cursor = start + 2;
+    return { text: next, anchor: cursor, head: cursor };
+  }
+  const cursor = start + mark.length;
+  return { text: next, anchor: cursor, head: cursor };
+}
+
 export function applyCommand(
   id: CommandId,
   text: string,
   anchor: number,
   head: number,
   language = "",
+  picturePath = "",
 ): EditResult {
   switch (id) {
     case "emphasis":
@@ -157,6 +179,9 @@ export function applyCommand(
       return wrap(text, anchor, head, "`", "`");
     case "link":
       return wrap(text, anchor, head, "[", "](url)");
+    case "picture":
+      if (!picturePath) return { text, anchor, head };
+      return insertPicture(text, anchor, head, picturePath);
     case "subsection":
       return prefixLine(text, anchor, head, "# ");
     case "lower-subsection":

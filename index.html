@@ -8,17 +8,15 @@
   <body>
     <div class="app">
       <header class="top">
+        <nav class="menubar">
+          <button id="btn-file" type="button" aria-haspopup="true" aria-expanded="false">File</button>
+          <button id="btn-edit" type="button" aria-haspopup="true" aria-expanded="false">Edit</button>
+        </nav>
         <input id="book-title" class="book-title" aria-label="Book title" spellcheck="false" />
         <span id="save-state" class="save-state"></span>
         <div class="toolbar">
-          <button id="btn-open" type="button">Open</button>
-          <button id="btn-new-section" type="button">Text</button>
-          <button id="btn-new-group" type="button">Folder</button>
-          <button id="btn-delete" type="button">Delete</button>
-          <button id="btn-preview" type="button" aria-pressed="true">Preview</button>
+          <button id="btn-preview" type="button" aria-pressed="true">Markup</button>
           <button id="btn-palette" type="button">Commands</button>
-          <button id="btn-reminder" type="button">Markup</button>
-          <button id="btn-export" type="button">Export</button>
         </div>
       </header>
       <div id="warnings" class="warnings" hidden></div>
@@ -51,6 +49,7 @@
           <div id="editor-host" class="editor-host"></div>
           <article id="reading" class="reading" hidden></article>
         </main>
+        <div id="pane-split" class="pane-split" role="separator" aria-orientation="vertical" aria-label="Resize preview" tabindex="0"></div>
         <aside id="preview" class="preview"></aside>
       </div>
     </div>
@@ -79,8 +78,8 @@
         <p id="create-label"></p>
         <input id="create-title" type="text" required />
         <div class="dialog-actions">
-          <button value="cancel" type="submit" formnovalidate>Cancel</button>
           <button value="ok" type="submit">Create</button>
+          <button value="cancel" type="submit" formnovalidate>Cancel</button>
         </div>
       </form>
     </dialog>

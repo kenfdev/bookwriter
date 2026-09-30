@@ -59,6 +59,20 @@ button:hover { background: #efe8dc; }
   font-size: 0.75rem;
 }
 
+.menubar {
+  display: flex;
+  gap: 0.15rem;
+}
+
+.menubar > button {
+  border-color: transparent;
+}
+
+.menubar > button:hover,
+.menubar > button[aria-expanded="true"] {
+  background: #e4d9c8;
+}
+
 .toolbar {
   margin-left: auto;
   display: flex;
@@ -76,7 +90,7 @@ button:hover { background: #efe8dc; }
 .workspace {
   flex: 1;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) minmax(280px, 36%);
+  grid-template-columns: 280px minmax(0, 1fr) 5px var(--preview-width, 36%);
   min-height: 0;
 }
 
@@ -84,7 +98,24 @@ button:hover { background: #efe8dc; }
   grid-template-columns: 280px minmax(0, 1fr);
 }
 
-.workspace.preview-off .preview { display: none; }
+.workspace.preview-off .preview,
+.workspace.preview-off .pane-split { display: none; }
+
+.pane-split {
+  position: relative;
+  cursor: col-resize;
+  background: #ddd4c6;
+  touch-action: none;
+}
+.pane-split::before {
+  content: "";
+  position: absolute;
+  inset: 0 -5px;
+}
+.pane-split:hover,
+.pane-split.dragging { background: #6e4b2a; }
+.pane-split:focus-visible { outline: 2px solid #6e4b2a; outline-offset: -2px; }
+body.pane-dragging { cursor: col-resize; user-select: none; }
 
 .outline-column, .preview, .stage {
   min-height: 0;
@@ -185,20 +216,41 @@ button:hover { background: #efe8dc; }
 .editor-host, .reading, .preview { height: 100%; }
 
 .editor-host .cm-editor { height: 100%; }
-.editor-host .cm-scroller { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; }
+.editor-host .cm-editor > .cm-scroller {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 15px;
+}
 .editor-host .cm-content { padding: 1.2rem 1.4rem 3rem; }
 .editor-host .cm-gutters { display: none; }
 
+.editor-host .cm-editor .cm-panels {
+  background: #efe8dc;
+  color: #241f1a;
+}
+.editor-host .cm-editor .cm-panels-top { border-bottom: 1px solid #ddd4c6; }
+.editor-host .cm-editor .cm-panel.cm-search input.cm-textfield {
+  background: #fbf8f2;
+  border: 1px solid #c9bfb2;
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+}
+.editor-host .cm-editor .cm-searchMatch { background-color: #f6e0a8; }
+.editor-host .cm-editor .cm-searchMatch.cm-searchMatch-selected { background-color: #e8b86a; }
+
 .reading, .preview {
   padding: 1.4rem 1.6rem 3rem;
+  cursor: text;
 }
 
 .preview {
-  border-left: 1px solid #ddd4c6;
   background: #fbf8f2;
 }
 
 .rendered-section { margin: 0 0 1.6rem; }
+.rendered-section img { max-width: 100%; height: auto; }
 .rendered-section h1, .rendered-section h2, .rendered-section h3,
 .rendered-section h4, .rendered-section h5, .rendered-section h6 {
   font-weight: 600;
@@ -228,6 +280,7 @@ button:hover { background: #efe8dc; }
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 0.9em;
 }
+.rendered-section :not(pre) > code { white-space: pre-wrap; }
 .rendered-section p code { background: #efe8dc; padding: 0 0.2rem; }
 .rendered-section table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
 .rendered-section th, .rendered-section td { border: 1px solid #ddd4c6; padding: 0.3rem 0.45rem; text-align: left; }
@@ -295,6 +348,8 @@ button:hover { background: #efe8dc; }
   position: fixed;
   z-index: 20;
   min-width: 9rem;
+  max-height: calc(100vh - 16px);
+  overflow: auto;
   margin: 0;
   padding: 0.25rem 0;
   background: #fffdf8;
@@ -303,15 +358,24 @@ button:hover { background: #efe8dc; }
   box-shadow: 0 8px 24px rgba(36, 31, 26, 0.12);
 }
 .context-menu button {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.4rem;
   width: 100%;
   text-align: left;
+  white-space: nowrap;
   border: none;
   border-radius: 0;
   background: transparent;
   padding: 0.35rem 0.75rem;
 }
 .context-menu button:hover { background: #efe8dc; }
+.menu-key {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: #6e665c;
+}
 
 #create-dialog {
   width: 100%;
@@ -334,6 +398,8 @@ button:hover { background: #efe8dc; }
 }
 #create-dialog input { width: 100%; margin: 0.4rem 0 0.8rem; padding: 0.35rem; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.4rem; }
+.dialog-actions button[value="cancel"] { order: 1; }
+.dialog-actions button[value="ok"] { order: 2; }
 
 .hljs-keyword, .hljs-selector-tag, .hljs-type { color: #e0b080; }
 .hljs-string, .hljs-attr { color: #d6d3a2; }
