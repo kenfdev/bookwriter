@@ -3,6 +3,7 @@ import type { DirEntry, Fs } from "./book";
 
 export const tauriFs: Fs = {
   readText: (path) => invoke("read_text", { path }),
+  readBytes: async (path) => new Uint8Array(await invoke<ArrayBuffer>("read_bytes", { path })),
   writeText: (path, text) => invoke("write_text", { path, text }),
   readDir: (path) => invoke<DirEntry[]>("read_dir", { path }),
   rename: (from, to) => invoke("rename_path", { from, to }),

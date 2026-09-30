@@ -23,7 +23,8 @@ import {
 } from "./book";
 import { COMMANDS, applyCommand, latestLanguage, type CommandId } from "./commands";
 import { exportBook } from "./export";
-import { exportPdf } from "./pdf";
+import { exportPdfWithPictures } from "./pdf";
+import { rasterizePicture } from "./rasterize";
 import { formatAccelerator } from "./keys";
 import { sourceOffset } from "./locate";
 import { findNode, nodeWordCount, slugify, walk, type Header, type Status, type TreeNode } from "./model";
@@ -704,7 +705,7 @@ async function exportPdfManuscript(): Promise<void> {
       filters: [{ name: "PDF", extensions: ["pdf"] }],
     });
     if (typeof destination !== "string") return;
-    const result = exportPdf(manuscriptNodes(book.nodes), book.title);
+    const result = await exportPdfWithPictures(manuscriptNodes(book.nodes), book.title, fs, book.root, { rasterize: rasterizePicture });
     await fs.writeText(destination, result.pdf);
     showWarnings(result.warnings);
     saveState.textContent = result.warnings.length ? "Exported with warnings" : "Exported";

@@ -20,6 +20,8 @@ export type DirEntry = { name: string; kind: "file" | "dir" };
 
 export interface Fs {
   readText(path: string): Promise<string>;
+  /** Whole file as bytes (pictures). */
+  readBytes(path: string): Promise<Uint8Array>;
   writeText(path: string, text: string): Promise<void>;
   readDir(path: string): Promise<DirEntry[]>;
   rename(from: string, to: string): Promise<void>;

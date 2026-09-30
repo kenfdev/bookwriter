@@ -3,6 +3,7 @@ identifier = "book-access"
 description = "Read and write the open book folder."
 commands.allow = [
   "read_text",
+  "read_bytes",
   "write_text",
   "read_dir",
   "rename_path",

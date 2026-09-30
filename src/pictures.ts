@@ -109,7 +109,7 @@ export function resolvePictureSources(html: string, toUrl: (bookRelative: string
 }
 
 /** A book-relative path, `false` when `src` is already a URL, or null when it leaves the book. */
-function bookPicturePath(src: string): string | false | null {
+export function bookPicturePath(src: string): string | false | null {
   if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return false;
   let decoded = src;
   try {

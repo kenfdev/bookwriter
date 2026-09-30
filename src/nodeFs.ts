@@ -7,6 +7,9 @@ export function nodeFs(): Fs {
     async readText(path) {
       return readFile(path, "utf8");
     },
+    async readBytes(path) {
+      return new Uint8Array(await readFile(path));
+    },
     async writeText(path, text) {
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, text, "utf8");

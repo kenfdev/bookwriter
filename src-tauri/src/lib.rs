@@ -16,6 +16,13 @@ fn read_text(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn read_bytes(path: String) -> Result<tauri::ipc::Response, String> {
+    fs::read(&path)
+        .map(tauri::ipc::Response::new)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn write_text(path: String, text: String) -> Result<(), String> {
     if let Some(parent) = PathBuf::from(&path).parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -125,6 +132,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             read_text,
+            read_bytes,
             write_text,
             read_dir,
             rename_path,
