@@ -53,13 +53,14 @@ describe("pdf export", () => {
 
   it("draws a directory tree and a dash rule instead of question marks", () => {
     const result = markdownToPdf(
-      ["```", "HTW/", "  ├── .gitignore", "  │   └── Cave.java", "  └ missing", "────────", "```", ""].join("\n"),
+      ["```", "HTW/", "  ├── .gitignore", "  │   └── Cave.java", "  └ missing", "────────", "\u2571\u2572\u2573\u253c", "```", ""].join("\n"),
     );
     expect(result.pdf).toContain("HTW/");
     expect(result.pdf).toContain("|-- .gitignore");
     expect(result.pdf).toContain("|   `-- Cave.java");
     expect(result.pdf).toContain("` missing");
     expect(result.pdf).toContain("--------");
+    expect(shown(result.pdf).some((piece) => piece.text.includes("/\\x+"))).toBe(true);
     expect(result.pdf).not.toContain("?");
     expect(result.warnings.some((warning) => warning.includes("cannot be shown"))).toBe(false);
   });
@@ -79,6 +80,16 @@ describe("pdf export", () => {
     expect(code.pdf).toContain("1-cov");
     expect(code.pdf).not.toContain("?");
     expect(code.warnings.some((warning) => warning.includes("cannot be shown"))).toBe(false);
+  });
+
+  it("keeps a soft break, a forced break, and a horizontal rule", () => {
+    const result = markdownToPdf("one\ntwo\n\nthree  \nfour\n\n---\n\nAfter.\n");
+    const texts = shown(result.pdf).map((piece) => piece.text);
+    expect(texts).toContain("one two");
+    expect(texts).toContain("three");
+    expect(texts).toContain("four");
+    expect(texts).toContain("After.");
+    expect(result.pdf).toMatch(/0\.6 G 0\.5 w [\d.]+ [\d.]+ m [\d.]+ [\d.]+ l S/);
   });
 
   it("is plain ASCII so the text writer can save it", () => {
@@ -103,6 +114,19 @@ describe("pdf export", () => {
       another,
     ]);
     expect(followed.pages).toBe(4);
+  });
+
+  it("prints a footnote that sits in a heading", () => {
+    const chapter = node(
+      "section",
+      { id: "plane", title: "Plane", unit: "chapter" },
+      "## SOLID[^2] Design Principles\n\n[^2]: Martin, 2003.\n",
+    );
+    const { pdf } = exportPdf([chapter], "Book");
+    const text = shown(pdf).map((piece) => piece.text).join("");
+    expect(text).toContain("SOLID[1] Design Principles");
+    expect(text).toContain("Martin, 2003.");
+    expect(text).not.toContain("[^");
   });
 
   it("keeps a chapter with its title when the previous page is nearly full", () => {

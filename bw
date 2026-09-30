@@ -1,11 +1,29 @@
 #!/bin/zsh
 set -euo pipefail
 
+function help_wanted {
+  for arg in "$@"; do
+    if [[ $arg == -- ]]; then
+      return 1
+    fi
+    if [[ $arg == --help || $arg == -h ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 source=${0:A}
 ROOT=${source:h}
+usage=$ROOT/usage.txt
+
+if help_wanted "$@"; then
+  cat "$usage"
+  exit 0
+fi
 
 if [[ $# -ne 1 ]]; then
-  print -u2 "usage: bw <directory>"
+  cat "$usage" >&2
   exit 64
 fi
 if [[ ! -d $1 ]]; then

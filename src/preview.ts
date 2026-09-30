@@ -141,48 +141,67 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+type FenceStep = { fence: Fence | null; skipped: boolean };
+
+function fenceAfter(line: string, fence: Fence | null): FenceStep {
+  const mark = fenceMark(line);
+  if (!mark) return { fence, skipped: fence !== null };
+  if (!fence) return { fence: { char: mark.char, len: mark.len }, skipped: true };
+  if (closesFence(fence, mark)) return { fence: null, skipped: true };
+  return { fence, skipped: true };
+}
+
+function recordInlineNote(content: string, count: { n: number }, notes: string[]): string {
+  count.n += 1;
+  const label = `__inline_${count.n}`;
+  notes.push(`[^${label}]: ${content}`);
+  return `[^${label}]`;
+}
+
+function replaceInlineNotes(line: string, count: { n: number }, notes: string[]): string {
+  const spans = codeSpanRanges(line);
+  return line.replace(/\^\[([^\]]*)\]/g, (match, content: string, offset: number) => {
+    if (insideSpan(offset, spans)) return match;
+    return recordInlineNote(content, count, notes);
+  });
+}
+
+function appendDefinedNotes(text: string, notes: string[]): string {
+  if (!notes.length) return text;
+  const base = text.endsWith("\n") ? text : text + "\n";
+  return `${base}\n${notes.join("\n")}\n`;
+}
+
 function expandInlineNotes(body: string): { text: string; warnings: string[] } {
   const warnings: string[] = [];
-  const lines = body.split("\n");
   const out: string[] = [];
   const notes: string[] = [];
+  const count = { n: 0 };
   let fence: Fence | null = null;
-  let count = 0;
 
-  for (const line of lines) {
-    const mark = fenceMark(line);
-    if (mark && !fence) {
-      fence = { char: mark.char, len: mark.len };
-      out.push(line);
-      continue;
-    }
-    if (mark && fence && closesFence(fence, mark)) {
-      fence = null;
-      out.push(line);
-      continue;
-    }
-    if (fence) {
-      out.push(line);
-      continue;
-    }
-    const spans = codeSpanRanges(line);
-    out.push(
-      line.replace(/\^\[([^\]]*)\]/g, (match, content: string, offset: number) => {
-        if (insideSpan(offset, spans)) return match;
-        count += 1;
-        const label = `__inline_${count}`;
-        notes.push(`[^${label}]: ${content}`);
-        return `[^${label}]`;
-      }),
-    );
+  for (const line of body.split("\n")) {
+    const step = fenceAfter(line, fence);
+    fence = step.fence;
+    out.push(step.skipped ? line : replaceInlineNotes(line, count, notes));
   }
   if (fence) warnings.push("Unclosed code fence.");
-  let text = out.join("\n");
-  if (notes.length) {
-    if (!text.endsWith("\n")) text += "\n";
-    text += "\n" + notes.join("\n") + "\n";
+  return { text: appendDefinedNotes(out.join("\n"), notes), warnings };
+}
+
+function collectRefs(line: string, spans: Array<[number, number]>, referenced: string[]): void {
+  for (const match of line.matchAll(/\[\^([^\]]+)\]/g)) {
+    if (!insideSpan(match.index ?? 0, spans)) referenced.push(match[1]);
   }
-  return { text, warnings };
+}
+
+function noteLabels(line: string, defined: Set<string>, referenced: string[]): void {
+  const spans = codeSpanRanges(line);
+  const definition = /^\[\^([^\]]+)\]:/.exec(line);
+  if (definition && !insideSpan(definition.index ?? 0, spans)) {
+    defined.add(definition[1]);
+    return;
+  }
+  collectRefs(line, spans, referenced);
 }
 
 function missingNotes(body: string): string[] {
@@ -190,25 +209,9 @@ function missingNotes(body: string): string[] {
   const referenced: string[] = [];
   let fence: Fence | null = null;
   for (const line of body.split("\n")) {
-    const mark = fenceMark(line);
-    if (mark && !fence) {
-      fence = { char: mark.char, len: mark.len };
-      continue;
-    }
-    if (mark && fence && closesFence(fence, mark)) {
-      fence = null;
-      continue;
-    }
-    if (fence) continue;
-    const spans = codeSpanRanges(line);
-    const definition = /^\[\^([^\]]+)\]:/.exec(line);
-    if (definition && !insideSpan(definition.index ?? 0, spans)) {
-      defined.add(definition[1]);
-      continue;
-    }
-    for (const match of line.matchAll(/\[\^([^\]]+)\]/g)) {
-      if (!insideSpan(match.index ?? 0, spans)) referenced.push(match[1]);
-    }
+    const step = fenceAfter(line, fence);
+    fence = step.fence;
+    if (!step.skipped) noteLabels(line, defined, referenced);
   }
   return referenced.filter((label) => !defined.has(label));
 }
@@ -231,7 +234,7 @@ export function renderSection(node: TreeNode, ancestors: TreeNode[], division?: 
   const missing = missingNotes(node.body);
   for (const label of missing) warnings.push(`Footnote [^${label}] has no definition.`);
 
-  let bodyHtml = md.render(expanded.text);
+  let bodyHtml = md.render(expanded.text, { docId: node.header.id });
   if (missing.length) {
     const items = missing
       .map((label) => `<li class="missing-fn">Missing note [^${escapeHtml(label)}].</li>`)
@@ -244,11 +247,17 @@ export function renderSection(node: TreeNode, ancestors: TreeNode[], division?: 
 
   const title = escapeHtml(node.header.title);
   const opener = division ? divisionOpener(division) : "";
-  const page = startsNewPage(node) ? " break" : "";
-  const klass = `rendered-section${front ? " front" : ""}${node.kind === "group" ? " folder" : ""}${page}`;
+  const klass = sectionClass(front, node.kind === "group", startsNewPage(node));
   const kicker = front ? `<p class="kicker">Front matter</p>` : "";
   const html = `<section class="${klass}" data-id="${escapeHtml(node.header.id)}" data-depth="${titleLevel.level}">${kicker}${opener}<h${titleLevel.level}>${title}</h${titleLevel.level}>${bodyHtml}</section>`;
   return { html, warnings };
+}
+
+function sectionClass(front: boolean, group: boolean, breaks: boolean): string {
+  const matter = front ? " front" : "";
+  const folder = group ? " folder" : "";
+  const page = breaks ? " break" : "";
+  return `rendered-section${matter}${folder}${page}`;
 }
 
 /** Shown in the reading view wherever a node starts a new page. */

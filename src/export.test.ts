@@ -125,6 +125,17 @@ describe("export", () => {
     expect(transformed.text).toContain("See.[^editor-1]");
   });
 
+  it("prefixes a footnote written in a heading", () => {
+    const transformed = transformBody("## SOLID[^2] Design Principles\n\n`[^2]` stays.\n\n[^2]: Martin, 2003.\n", {
+      depth: 1,
+      sectionId: "plane",
+      front: false,
+    });
+    expect(transformed.text).toContain("### SOLID[^plane-2] Design Principles");
+    expect(transformed.text).toContain("`[^2]` stays.");
+    expect(transformed.text).toContain("[^plane-2]: Martin, 2003.");
+  });
+
   it("leaves headings and footnotes inside fences alone", () => {
     const transformed = transformBody("```\n# Stay\n[^1]\n```\n\nSee.[^1]\n\n[^1]: Note.\n", {
       depth: 2,

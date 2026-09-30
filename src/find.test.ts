@@ -35,6 +35,12 @@ describe("find across texts", () => {
     expect(nextMatch([{ id: "naming", text: "category\n" }], "naming", 0, query("cat", { wholeWord: true }))).toBeNull();
   });
 
+  it("starts at the beginning when the open text is not in the book", () => {
+    expect(nextMatch(parts, "missing", 4, query("cat"))).toEqual({ id: "preface", from: 2, to: 5 });
+    expect(previousMatch(parts, "missing", 0, query("cat"))).toEqual({ id: "inward", from: 22, to: 25 });
+    expect(previousMatch([{ id: "only", text: "xx cat yy" }], "only", 0, query("cat"))).toEqual({ id: "only", from: 3, to: 6 });
+  });
+
   it("returns nothing for an empty or invalid query", () => {
     expect(nextMatch(parts, "naming", 0, query(""))).toBeNull();
     expect(nextMatch(parts, "naming", 0, query("[", { regexp: true }))).toBeNull();

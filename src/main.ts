@@ -2,7 +2,7 @@ import "./styles.css";
 import { defaultKeymap, history, historyKeymap, redo, redoDepth, undo, undoDepth } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
-import { findNext, findPrevious, getSearchQuery, openSearchPanel, search, searchKeymap, setSearchQuery } from "@codemirror/search";
+import { findNext, findPrevious, getSearchQuery, openSearchPanel, search, searchKeymap, setSearchQuery, type SearchQuery } from "@codemirror/search";
 import { EditorSelection, EditorState, Transaction } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -21,9 +21,9 @@ import {
   type Book,
   type DropZone,
 } from "./book";
-import { COMMANDS, applyCommand, latestLanguage, type CommandId } from "./commands";
+import { COMMANDS, applyCommand, latestLanguage, type CommandId, type MarkupCommand } from "./commands";
 import { exportBook } from "./export";
-import { nextMatch, previousMatch, type FindPart } from "./find";
+import { nextMatch, previousMatch, type FindHit, type FindPart } from "./find";
 import { exportPdfWithPictures } from "./pdf";
 import { rasterizePicture } from "./rasterize";
 import { formatAccelerator } from "./keys";
@@ -34,7 +34,7 @@ import { PICTURE_EXTENSIONS, placePicture, resolvePictureSources } from "./pictu
 import { renderBook, renderGroup, renderSection } from "./preview";
 import { clampPreviewWidth, previewWidthFromPointer } from "./split";
 import { allowBook, startupBookPath, tauriFs } from "./tauriFs";
-import { dropRedo, emptyTrail, historyStep, noteVisit, redoVisit, undoVisit } from "./trail";
+import { dropRedo, emptyTrail, historyStep, noteVisit, redoVisit, undoVisit, type Trail } from "./trail";
 
 const fs = tauriFs;
 const bookTitle = document.querySelector<HTMLInputElement>("#book-title")!;
@@ -83,6 +83,13 @@ let pendingHistory: "undo" | "redo" | null = null;
 let historyBusy = false;
 
 type Visit = { id: string; prose: boolean; state: EditorState | null };
+type Selection = { node: TreeNode; ancestors: TreeNode[] };
+type VisitMove = { trail: Trail<Visit>; to: Visit };
+type ContextAction = { label: string; run: () => Promise<void> };
+type CaretDoc = Document & {
+  caretRangeFromPoint?: (px: number, py: number) => Range | null;
+  caretPositionFromPoint?: (px: number, py: number) => { offsetNode: Node; offset: number } | null;
+};
 let trail = emptyTrail<Visit>();
 
 function inMarkup(command: Command): Command {
@@ -94,19 +101,38 @@ let searchWholeBook = false;
 
 /** Find Next and Find Previous follow the whole-book checkbox. Other search commands stay as they are. */
 function bookSearch(command: Command): Command {
-  return (view) => {
-    if (searchWholeBook && command === findNext) {
-      void findInBook("next");
-      return true;
-    }
-    if (searchWholeBook && command === findPrevious) {
-      void findInBook("previous");
-      return true;
-    }
-    const ran = command(view);
-    if (ran) wireBookFind(view);
-    return ran;
-  };
+  return (view) => runBookSearch(command, view);
+}
+
+function runBookSearch(command: Command, view: EditorView): boolean {
+  if (wholeBookStep(command)) return true;
+  return finishBookSearch(command, view);
+}
+
+function wholeBookStep(command: Command): boolean {
+  if (!searchWholeBook) return false;
+  return stepWholeBook(command);
+}
+
+function stepWholeBook(command: Command): boolean {
+  if (command === findNext) return startBookFind("next");
+  return stepWholeBookBack(command);
+}
+
+function stepWholeBookBack(command: Command): boolean {
+  if (command !== findPrevious) return false;
+  return startBookFind("previous");
+}
+
+function startBookFind(direction: "next" | "previous"): boolean {
+  void findInBook(direction);
+  return true;
+}
+
+function finishBookSearch(command: Command, view: EditorView): boolean {
+  const ran = command(view);
+  if (ran) wireBookFind(view);
+  return ran;
 }
 
 const editorExtensions = [
@@ -167,24 +193,45 @@ function viewingBook(): boolean {
 }
 
 function selectable(id: string): boolean {
-  return id === BOOK_ID || (!!book && !!findNode(book.nodes, id));
+  if (id === BOOK_ID) return true;
+  return nodeExists(id);
 }
 
-function selected(): { node: TreeNode; ancestors: TreeNode[] } | null {
-  if (!book || !selectedId || viewingBook()) return null;
-  return findNode(book.nodes, selectedId);
+function nodeExists(id: string): boolean {
+  return book != null && findNode(book.nodes, id) != null;
+}
+
+function selected(): Selection | null {
+  if (noSelection()) return null;
+  return findNode(book!.nodes, selectedId!);
+}
+
+function noSelection(): boolean {
+  return missingBookOrId() || viewingBook();
+}
+
+function missingBookOrId(): boolean {
+  return book == null || selectedId == null;
 }
 
 function editing(): boolean {
   const current = selected();
   if (!current) return false;
-  return current.node.kind === "section" || editingProse;
+  return editingNode(current.node);
+}
+
+function editingNode(node: TreeNode): boolean {
+  return node.kind === "section" || editingProse;
 }
 
 function selectedUnit(): Unit {
   const picked = unitInputs.find((input) => input.checked)?.value;
-  if (picked && (UNITS as readonly string[]).includes(picked)) return picked as Unit;
+  if (isUnit(picked)) return picked;
   return "text";
+}
+
+function isUnit(picked: string | undefined): picked is Unit {
+  return picked != null && (UNITS as readonly string[]).includes(picked);
 }
 
 function headerFromForm(node: TreeNode): Header {
@@ -204,17 +251,29 @@ function cancelSave(): void {
 }
 
 function loadDocument(body: string, resetHistory: boolean): void {
-  if (!resetHistory && editor.state.doc.toString() === body) return;
+  if (documentUnchanged(body, resetHistory)) return;
   suppress = true;
-  if (resetHistory) editor.setState(EditorState.create({ doc: body, extensions: editorExtensions }));
-  else editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: body } });
+  replaceDocument(body, resetHistory);
   suppress = false;
   dirty = false;
 }
 
+function documentUnchanged(body: string, resetHistory: boolean): boolean {
+  return !resetHistory && editor.state.doc.toString() === body;
+}
+
+function replaceDocument(body: string, resetHistory: boolean): void {
+  if (resetHistory) editor.setState(EditorState.create({ doc: body, extensions: editorExtensions }));
+  else editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: body } });
+}
+
 function takeVisit(): Visit | null {
   if (!selectedId) return null;
-  return { id: selectedId, prose: editingProse, state: editing() ? editor.state : null };
+  return { id: selectedId, prose: editingProse, state: visitState() };
+}
+
+function visitState(): EditorState | null {
+  return editing() ? editor.state : null;
 }
 
 function showCurrent(): void {
@@ -229,25 +288,44 @@ function showCurrent(): void {
 async function flush(): Promise<void> {
   cancelSave();
   const current = selected();
-  if (!book || !current || !dirty) return;
-  const body = editing() ? editor.state.doc.toString() : current.node.body;
-  await saveNode(fs, current.node, headerFromForm(current.node), body);
+  if (cannotSave(current)) return;
+  await saveCurrent(current);
+}
+
+function cannotSave(current: Selection | null): current is null {
+  return !hasSaveTarget(current) || !dirty;
+}
+
+function hasSaveTarget(current: Selection | null): boolean {
+  return book != null && current != null;
+}
+
+async function saveCurrent(current: Selection): Promise<void> {
+  await saveNode(fs, current.node, headerFromForm(current.node), flushBody(current));
   dirty = false;
   saveState.textContent = "Saved";
   paintWordCount();
 }
 
+function flushBody(current: Selection): string {
+  return editing() ? editor.state.doc.toString() : current.node.body;
+}
+
 function requestHistory(kind: "undo" | "redo"): boolean {
-  if (activeField()) return true;
-  if (pendingHistory) return true;
+  if (historyBlocked()) return true;
   pendingHistory = kind;
-  queueMicrotask(() => {
-    const which = pendingHistory;
-    pendingHistory = null;
-    if (which === "undo") void stepHistory("undo");
-    else if (which === "redo") void stepHistory("redo");
-  });
+  queueMicrotask(runPendingHistory);
   return true;
+}
+
+function historyBlocked(): boolean {
+  return activeField() != null || pendingHistory != null;
+}
+
+function runPendingHistory(): void {
+  const which = pendingHistory;
+  pendingHistory = null;
+  if (which) void stepHistory(which);
 }
 
 function menuHistory(kind: "undo" | "redo"): void {
@@ -262,19 +340,61 @@ function menuHistory(kind: "undo" | "redo"): void {
 // you left and restores the text there, rather than writing that text here.
 async function stepHistory(kind: "undo" | "redo"): Promise<void> {
   if (historyBusy) return;
-  const local = editing() ? (kind === "undo" ? undoDepth(editor.state) : redoDepth(editor.state)) : 0;
-  const switches = kind === "undo" ? trail.undo.length : trail.redo.length;
-  const step = historyStep(local, switches);
-  if (step === "local") {
-    if (kind === "undo") undo(editor);
-    else redo(editor);
-    return;
-  }
+  await applyHistoryStep(kind, historyStep(localDepth(kind), switchCount(kind)));
+}
+
+function localDepth(kind: "undo" | "redo"): number {
+  return editing() ? editorDepth(kind) : 0;
+}
+
+function editorDepth(kind: "undo" | "redo"): number {
+  return kind === "undo" ? undoDepth(editor.state) : redoDepth(editor.state);
+}
+
+function switchCount(kind: "undo" | "redo"): number {
+  return kind === "undo" ? trail.undo.length : trail.redo.length;
+}
+
+async function applyHistoryStep(kind: "undo" | "redo", step: "local" | "switch" | "none"): Promise<void> {
+  if (step === "local") undoOrRedo(kind);
+  else await moveHistory(kind, step);
+}
+
+function undoOrRedo(kind: "undo" | "redo"): void {
+  if (kind === "undo") undo(editor);
+  else redo(editor);
+}
+
+async function moveHistory(kind: "undo" | "redo", step: "local" | "switch" | "none"): Promise<void> {
   if (step === "none") return;
+  await landHistory(kind);
+}
+
+async function landHistory(kind: "undo" | "redo"): Promise<void> {
   const here = takeVisit();
-  if (!here || !book) return;
-  const moved = kind === "undo" ? undoVisit(trail, here) : redoVisit(trail, here);
-  if (!moved || !selectable(moved.to.id)) return;
+  if (cannotLeave(here)) return;
+  await landMoved(kind, here);
+}
+
+function cannotLeave(here: Visit | null): here is null {
+  return here == null || book == null;
+}
+
+async function landMoved(kind: "undo" | "redo", here: Visit): Promise<void> {
+  const moved = shiftedVisit(kind, here);
+  if (cannotLand(moved)) return;
+  await finishLand(moved);
+}
+
+function shiftedVisit(kind: "undo" | "redo", here: Visit): VisitMove | null {
+  return kind === "undo" ? undoVisit(trail, here) : redoVisit(trail, here);
+}
+
+function cannotLand(moved: VisitMove | null): moved is null {
+  return moved == null || !selectable(moved.to.id);
+}
+
+async function finishLand(moved: VisitMove): Promise<void> {
   trail = moved.trail;
   historyBusy = true;
   try {
@@ -286,33 +406,87 @@ async function stepHistory(kind: "undo" | "redo"): Promise<void> {
 
 async function land(visit: Visit): Promise<void> {
   navigating = true;
+  const landed = await tryLand(visit);
+  if (landed) showCurrent();
+}
+
+async function tryLand(visit: Visit): Promise<boolean> {
   try {
-    cancelSave();
-    await flush();
-    if (dirty) await flush();
-    if (!book || !selectable(visit.id)) return;
-    selectedId = visit.id;
-    editingProse = visit.prose;
-    if (visit.state) {
-      suppress = true;
-      editor.setState(visit.state);
-      suppress = false;
-    } else {
-      const current = selected();
-      loadDocument(current && editing() ? current.node.body : "", true);
-    }
-    const current = selected();
-    if (current && editing() && current.node.body !== editor.state.doc.toString()) {
-      dirty = true;
-      await flush();
-    } else {
-      dirty = false;
-      saveState.textContent = "Saved";
-    }
+    return await prepareLand(visit);
   } finally {
     navigating = false;
   }
-  showCurrent();
+}
+
+async function prepareLand(visit: Visit): Promise<boolean> {
+  cancelSave();
+  await flushTwice();
+  if (cannotLandOn(visit)) return false;
+  await settleVisit(visit);
+  return true;
+}
+
+async function flushTwice(): Promise<void> {
+  await flush();
+  if (dirty) await flush();
+}
+
+function cannotLandOn(visit: Visit): boolean {
+  return book == null || !selectable(visit.id);
+}
+
+async function settleVisit(visit: Visit): Promise<void> {
+  selectedId = visit.id;
+  editingProse = visit.prose;
+  restoreVisitState(visit);
+  await syncLandedBody();
+}
+
+function restoreVisitState(visit: Visit): void {
+  if (visit.state) restoreEditorState(visit.state);
+  else loadSelectedBody();
+}
+
+function restoreEditorState(state: EditorState): void {
+  suppress = true;
+  editor.setState(state);
+  suppress = false;
+}
+
+function loadSelectedBody(): void {
+  loadDocument(editingBody(selected()), true);
+}
+
+function editingBody(current: Selection | null): string {
+  if (hasEditingBody(current)) return current.node.body;
+  return "";
+}
+
+function hasEditingBody(current: Selection | null): current is Selection {
+  return current != null && editing();
+}
+
+async function syncLandedBody(): Promise<void> {
+  if (landedBodyDiffers(selected())) await markDirtyAndFlush();
+  else markSaved();
+}
+
+function landedBodyDiffers(current: Selection | null): boolean {
+  return current != null && bodyOutOfDate(current);
+}
+
+function bodyOutOfDate(current: Selection): boolean {
+  return editing() && current.node.body !== editor.state.doc.toString();
+}
+
+async function markDirtyAndFlush(): Promise<void> {
+  dirty = true;
+  await flush();
+}
+
+function markSaved(): void {
+  dirty = false;
+  saveState.textContent = "Saved";
 }
 
 function showPictures(html: string): string {
@@ -338,30 +512,64 @@ function placeCursor(offset: number): void {
 
 function elementAt(target: EventTarget | null): Element | null {
   if (target instanceof Element) return target;
+  return parentElementOf(target);
+}
+
+function parentElementOf(target: EventTarget | null): Element | null {
   if (target instanceof Node) return target.parentElement;
   return null;
 }
 
 function fractionAt(block: HTMLElement, x: number, y: number): number {
-  const doc = block.ownerDocument as Document & {
-    caretRangeFromPoint?: (px: number, py: number) => Range | null;
-    caretPositionFromPoint?: (px: number, py: number) => { offsetNode: Node; offset: number } | null;
-  };
+  const placed = caretFraction(block, x, y);
+  if (placed != null) return placed;
+  return verticalFraction(block, y);
+}
+
+function caretFraction(block: HTMLElement, x: number, y: number): number | null {
+  const doc = block.ownerDocument as CaretDoc;
   const total = block.textContent?.length ?? 0;
   const range = doc.caretRangeFromPoint?.(x, y);
-  const point = range ? null : doc.caretPositionFromPoint?.(x, y);
+  const point = caretPoint(doc, range, x, y);
   const node = range?.startContainer ?? point?.offsetNode;
   const nodeOffset = range?.startOffset ?? point?.offset;
-  if (node && nodeOffset != null && block.contains(node) && total > 0) {
-    try {
-      const probe = doc.createRange();
-      probe.setStart(block, 0);
-      probe.setEnd(node, nodeOffset);
-      return Math.min(1, Math.max(0, probe.toString().length / total));
-    } catch {
-      // The caret sits outside this block. Use the vertical fraction below.
-    }
+  if (!caretInside(block, node, nodeOffset, total)) return null;
+  return probeFraction(doc, block, node, nodeOffset as number, total);
+}
+
+function caretPoint(doc: CaretDoc, range: Range | null | undefined, x: number, y: number) {
+  return range ? null : doc.caretPositionFromPoint?.(x, y);
+}
+
+function caretInside(block: HTMLElement, node: Node | undefined, nodeOffset: number | undefined, total: number): node is Node {
+  return node != null && offsetInBlock(block, node, nodeOffset, total);
+}
+
+function offsetInBlock(block: HTMLElement, node: Node, nodeOffset: number | undefined, total: number): boolean {
+  return nodeOffset != null && containsWithText(block, node, total);
+}
+
+function containsWithText(block: HTMLElement, node: Node, total: number): boolean {
+  return block.contains(node) && total > 0;
+}
+
+function probeFraction(doc: CaretDoc, block: HTMLElement, node: Node, nodeOffset: number, total: number): number | null {
+  try {
+    return measuredFraction(doc, block, node, nodeOffset, total);
+  } catch {
+    // The caret sits outside this block. Use the vertical fraction below.
+    return null;
   }
+}
+
+function measuredFraction(doc: CaretDoc, block: HTMLElement, node: Node, nodeOffset: number, total: number): number {
+  const probe = doc.createRange();
+  probe.setStart(block, 0);
+  probe.setEnd(node, nodeOffset);
+  return Math.min(1, Math.max(0, probe.toString().length / total));
+}
+
+function verticalFraction(block: HTMLElement, y: number): number {
   const rect = block.getBoundingClientRect();
   if (rect.height <= 0) return 0;
   return Math.min(1, Math.max(0, (y - rect.top) / rect.height));
@@ -371,24 +579,61 @@ function nearestBlock(root: HTMLElement, y: number): HTMLElement | null {
   let best: HTMLElement | null = null;
   let bestDist = Infinity;
   for (const block of root.querySelectorAll<HTMLElement>("[data-line]")) {
-    const rect = block.getBoundingClientRect();
-    const dist = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
-    if (dist < bestDist) {
-      best = block;
-      bestDist = dist;
-    }
+    const closer = closerBlock(block, y, best, bestDist);
+    best = closer[0];
+    bestDist = closer[1];
   }
   return best;
+}
+
+function closerBlock(block: HTMLElement, y: number, best: HTMLElement | null, bestDist: number): [HTMLElement | null, number] {
+  const dist = blockDistance(block, y);
+  if (dist < bestDist) return [block, dist];
+  return [best, bestDist];
+}
+
+function blockDistance(block: HTMLElement, y: number): number {
+  const rect = block.getBoundingClientRect();
+  if (y < rect.top) return rect.top - y;
+  return belowDistance(rect, y);
+}
+
+function belowDistance(rect: DOMRect, y: number): number {
+  return y > rect.bottom ? y - rect.bottom : 0;
 }
 
 /** Approximate source offset for a click in rendered markup. */
 function clickOffset(root: HTMLElement, event: MouseEvent, source: string): number {
   const element = elementAt(event.target);
-  if (!element || !root.contains(element)) return 0;
+  if (!insideRoot(root, element)) return 0;
+  return offsetInRoot(root, element, event, source);
+}
+
+function insideRoot(root: HTMLElement, element: Element | null): element is Element {
+  return element != null && root.contains(element);
+}
+
+function offsetInRoot(root: HTMLElement, element: Element, event: MouseEvent, source: string): number {
   const direct = element.closest<HTMLElement>("[data-line]");
-  if (direct && root.contains(direct)) return offsetOfBlock(direct, event, source);
+  if (ownedBlock(root, direct)) return offsetOfBlock(direct, event, source);
+  return offsetFromHeading(root, element, event, source);
+}
+
+function ownedBlock(root: HTMLElement, block: HTMLElement | null): block is HTMLElement {
+  return block != null && root.contains(block);
+}
+
+function offsetFromHeading(root: HTMLElement, element: Element, event: MouseEvent, source: string): number {
   const heading = element.closest("h1, h2, h3, h4, h5, h6");
-  if (heading && root.contains(heading)) return 0;
+  if (ownedHeading(root, heading)) return 0;
+  return offsetFromNearest(root, event, source);
+}
+
+function ownedHeading(root: HTMLElement, heading: Element | null): boolean {
+  return heading != null && root.contains(heading);
+}
+
+function offsetFromNearest(root: HTMLElement, event: MouseEvent, source: string): number {
   const block = nearestBlock(root, event.clientY);
   if (!block) return 0;
   return offsetOfBlock(block, event, source);
@@ -397,8 +642,12 @@ function clickOffset(root: HTMLElement, event: MouseEvent, source: string): numb
 function offsetOfBlock(block: HTMLElement, event: MouseEvent, source: string): number {
   const start = Number(block.dataset.line);
   const end = Number(block.dataset.end ?? String(start + 1));
-  if (!Number.isInteger(start) || !Number.isInteger(end)) return 0;
+  if (!integerSpan(start, end)) return 0;
   return sourceOffset(source, start, end, fractionAt(block, event.clientX, event.clientY));
+}
+
+function integerSpan(start: number, end: number): boolean {
+  return Number.isInteger(start) && Number.isInteger(end);
 }
 
 function showWarnings(lines: string[]): void {
@@ -410,10 +659,17 @@ function showWarnings(lines: string[]): void {
 function paintWordCount(): void {
   const current = selected();
   if (!current) return;
-  const row = outlineEl.querySelector<HTMLElement>(`[data-id="${CSS.escape(current.node.header.id)}"] .meta`);
+  paintRowCount(current.node);
+}
+
+function paintRowCount(node: TreeNode): void {
+  const row = outlineEl.querySelector<HTMLElement>(`[data-id="${CSS.escape(node.header.id)}"] .meta`);
   if (!row) return;
-  const copy = { ...current.node, body: editing() ? editor.state.doc.toString() : current.node.body };
-  row.textContent = `${copy.header.status} · ${nodeWordCount(copy)} words`;
+  row.textContent = `${node.header.status} · ${nodeWordCount(countedNode(node))} words`;
+}
+
+function countedNode(node: TreeNode): TreeNode {
+  return { ...node, body: editing() ? editor.state.doc.toString() : node.body };
 }
 
 const MIN_PANE = 180;
@@ -421,11 +677,20 @@ const PREVIEW_WIDTH_KEY = "bookwriter.preview-width";
 
 function readPreviewWidth(): number | null {
   try {
-    const value = Number(localStorage.getItem(PREVIEW_WIDTH_KEY));
-    return Number.isFinite(value) && value > 0 ? value : null;
+    return storedPreviewWidth();
   } catch {
     return null;
   }
+}
+
+function storedPreviewWidth(): number | null {
+  const value = Number(localStorage.getItem(PREVIEW_WIDTH_KEY));
+  if (usableWidth(value)) return value;
+  return null;
+}
+
+function usableWidth(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
 }
 
 function writePreviewWidth(width: number): void {
@@ -487,6 +752,10 @@ paneSplit.addEventListener("pointermove", (event) => {
 });
 function endSplit(): void {
   if (!splitting) return;
+  stopSplitting();
+}
+
+function stopSplitting(): void {
   splitting = false;
   paneSplit.classList.remove("dragging");
   document.body.classList.remove("pane-dragging");
@@ -509,70 +778,125 @@ window.addEventListener("resize", () => {
 
 function drawPreview(): void {
   const current = selected();
-  previewEl.hidden = !previewOn || !editing();
-  paneSplit.hidden = previewEl.hidden;
-  workspace.classList.toggle("preview-off", previewEl.hidden);
-  if (!current || !editing()) {
+  hidePreviewUnlessEditing();
+  if (!canPreview(current)) {
     previewEl.innerHTML = "";
     return;
   }
+  paintPreview(current);
+}
+
+function hidePreviewUnlessEditing(): void {
+  previewEl.hidden = !previewOn || !editing();
+  paneSplit.hidden = previewEl.hidden;
+  workspace.classList.toggle("preview-off", previewEl.hidden);
+}
+
+function canPreview(current: Selection | null): current is Selection {
+  return current != null && editing();
+}
+
+function paintPreview(current: Selection): void {
   const node = { ...current.node, body: editor.state.doc.toString(), children: current.node.children };
   const rendered = renderSection(node, current.ancestors, divisionOf(current.node));
-  const sameSection = previewEl.querySelector<HTMLElement>("section[data-id]")?.dataset.id === node.header.id;
-  const scroll = sameSection ? previewEl.scrollTop : 0;
+  const scroll = keptScroll(node.header.id);
   previewEl.innerHTML = showPictures(rendered.html);
   previewEl.scrollTop = scroll;
   showWarnings([...(book?.warnings ?? []), ...rendered.warnings]);
+}
+
+function keptScroll(id: string): number {
+  const sameSection = previewEl.querySelector<HTMLElement>("section[data-id]")?.dataset.id === id;
+  return sameSection ? previewEl.scrollTop : 0;
 }
 
 const PREVIEW_SCROLL_PADDING = 48;
 
 /** Scroll the preview to the rendered block around the editor cursor. */
 function scrollPreviewToCursor(): void {
-  if (previewEl.hidden || !editing()) return;
-  const source = editor.state.doc.toString();
-  const cursor = editor.state.selection.main.head;
+  if (previewClosed()) return;
+  scrollPreviewLine(editor.state.doc.toString(), editor.state.selection.main.head);
+}
+
+function previewClosed(): boolean {
+  return Boolean(previewEl.hidden) || !editing();
+}
+
+function scrollPreviewLine(source: string, cursor: number): void {
   const line = editor.state.doc.lineAt(cursor).number - 1;
   const blocks = [...previewEl.querySelectorAll<HTMLElement>("[data-line]")];
-  const spans = blocks.map((block) => {
-    const start = Number(block.dataset.line);
-    const end = block.dataset.end === undefined ? start + 1 : Number(block.dataset.end);
-    return { start, end };
-  });
+  const spans = blocks.map(blockSpan);
   const picked = blockAtLine(spans, line);
-  if (picked < 0) {
-    previewEl.scrollTop = 0;
-    return;
-  }
-  const span = spans[picked];
+  if (picked < 0) previewEl.scrollTop = 0;
+  else placePreviewScroll(source, cursor, blocks[picked], spans[picked]);
+}
+
+function blockSpan(block: HTMLElement): { start: number; end: number } {
+  const start = Number(block.dataset.line);
+  const end = block.dataset.end === undefined ? start + 1 : Number(block.dataset.end);
+  return { start, end };
+}
+
+function placePreviewScroll(source: string, cursor: number, block: HTMLElement, span: { start: number; end: number }): void {
   const fraction = offsetFraction(cursor, lineOffset(source, span.start), lineOffset(source, span.end));
   const pane = previewEl.getBoundingClientRect();
-  const rect = blocks[picked].getBoundingClientRect();
+  const rect = block.getBoundingClientRect();
   const spot = rect.top + rect.height * fraction;
   previewEl.scrollTop = scrollToSpot(previewEl.scrollTop, pane.top, spot, PREVIEW_SCROLL_PADDING);
 }
 
 function drawReading(): void {
-  if (viewingBook() && book && !editing()) {
-    editorHost.hidden = true;
-    readingEl.hidden = false;
-    const rendered = renderBook(manuscriptNodes(book.nodes));
-    readingEl.innerHTML = showPictures(rendered.html);
-    showWarnings([...(book.warnings ?? []), ...rendered.warnings]);
-    return;
-  }
-  const current = selected();
-  if (!current || editing() || isTrash(current.node)) {
-    readingEl.hidden = true;
-    readingEl.innerHTML = "";
-    editorHost.hidden = !editing();
-    return;
-  }
+  if (readingWholeBook()) paintWholeBook();
+  else paintSelectionReading();
+}
+
+function readingWholeBook(): boolean {
+  return openBookView() && !editing();
+}
+
+function openBookView(): boolean {
+  return viewingBook() && book != null;
+}
+
+function paintWholeBook(): void {
   editorHost.hidden = true;
   readingEl.hidden = false;
-  const rendered = renderGroup(current.node, current.ancestors, book ? divisions(book.nodes) : undefined);
+  const rendered = renderBook(manuscriptNodes(book!.nodes));
+  readingEl.innerHTML = showPictures(rendered.html);
+  showWarnings([...(book!.warnings ?? []), ...rendered.warnings]);
+}
+
+function paintSelectionReading(): void {
+  const current = selected();
+  if (hideReading(current)) clearReading();
+  else paintGroupReading(current);
+}
+
+function hideReading(current: Selection | null): current is null {
+  if (!current) return true;
+  return editingOrTrash(current.node);
+}
+
+function editingOrTrash(node: TreeNode): boolean {
+  return editing() || isTrash(node);
+}
+
+function clearReading(): void {
+  readingEl.hidden = true;
+  readingEl.innerHTML = "";
+  editorHost.hidden = !editing();
+}
+
+function paintGroupReading(current: Selection): void {
+  editorHost.hidden = true;
+  readingEl.hidden = false;
+  const rendered = renderGroup(current.node, current.ancestors, groupDivisions());
   readingEl.innerHTML = showPictures(rendered.html);
   showWarnings([...(book?.warnings ?? []), ...rendered.warnings]);
+}
+
+function groupDivisions(): Map<string, Division> | undefined {
+  return book ? divisions(book.nodes) : undefined;
 }
 
 function divisionOf(node: TreeNode): Division | undefined {
@@ -592,115 +916,206 @@ function bookWordCount(): number {
 function renderOutline(): void {
   outlineEl.replaceChildren();
   if (!book) return;
+  appendOutline();
+}
+
+function appendOutline(): void {
+  appendBookRow();
+  if (bookOpen()) drawNodes(book!.nodes, 1);
+}
+
+function bookOpen(): boolean {
+  return !collapsed.has(BOOK_ID);
+}
+
+function appendBookRow(): void {
   const bookRow = document.createElement("div");
-  bookRow.className = `node book${viewingBook() ? " selected" : ""}`;
+  bookRow.className = bookRowClass();
   bookRow.dataset.id = BOOK_ID;
-  const bookOpen = !collapsed.has(BOOK_ID);
-  const bookTwist = document.createElement("button");
-  bookTwist.type = "button";
-  bookTwist.className = "twist";
-  bookTwist.textContent = bookOpen ? "▾" : "▸";
-  bookTwist.setAttribute("aria-expanded", String(bookOpen));
-  bookTwist.setAttribute("aria-label", bookOpen ? "Collapse book" : "Expand book");
-  bookTwist.addEventListener("click", (event) => {
-    event.stopPropagation();
-    if (collapsed.has(BOOK_ID)) collapsed.delete(BOOK_ID);
-    else collapsed.add(BOOK_ID);
-    renderOutline();
-  });
-  const bookBody = document.createElement("div");
-  bookBody.className = "node-body";
-  const bookLabel = document.createElement("span");
-  bookLabel.className = "title";
-  bookLabel.textContent = book.title || "Book";
-  const bookMeta = document.createElement("span");
-  bookMeta.className = "meta";
-  bookMeta.textContent = `${bookWordCount()} words`;
-  bookBody.append(bookLabel, bookMeta);
-  bookRow.append(bookTwist, bookBody);
+  bookRow.append(bookTwistButton(), bookBody());
   bookRow.addEventListener("click", () => void choose(BOOK_ID, false));
   outlineEl.append(bookRow);
-  if (!bookOpen) return;
-  const draw = (nodes: TreeNode[], depth: number) => {
-    for (const node of nodes) {
-      const row = document.createElement("div");
-      row.className =
-        `node ${node.kind}` +
-        (isTrash(node) ? " trash" : "") +
-        (node.header.id === selectedId ? " selected" : "");
-      row.dataset.id = node.header.id;
-      row.draggable = !isTrash(node);
-      row.style.paddingLeft = `${0.35 + depth * 0.85}rem`;
-      const body = document.createElement("div");
-      body.className = "node-body";
-      if (node.kind === "group") {
-        const open = !collapsed.has(node.header.id);
-        const twist = document.createElement("button");
-        twist.type = "button";
-        twist.className = "twist";
-        twist.textContent = open ? "▾" : "▸";
-        twist.setAttribute("aria-expanded", String(open));
-        twist.setAttribute("aria-label", open ? "Collapse folder" : "Expand folder");
-        twist.addEventListener("click", (event) => {
-          event.stopPropagation();
-          if (collapsed.has(node.header.id)) collapsed.delete(node.header.id);
-          else collapsed.add(node.header.id);
-          renderOutline();
-        });
-        row.append(twist);
-      } else {
-        const spacer = document.createElement("span");
-        spacer.className = "twist-spacer";
-        row.append(spacer);
-      }
-      const division = divisionOf(node);
-      if (division) {
-        const label = document.createElement("span");
-        label.className = "chapter-number";
-        label.textContent = divisionLabel(division);
-        body.append(label);
-      }
-      const title = document.createElement("span");
-      title.className = "title";
-      title.textContent = outlineTitle(node);
-      const meta = document.createElement("span");
-      meta.className = "meta";
-      meta.textContent = `${node.header.status} · ${nodeWordCount(node)} words`;
-      body.append(title, meta);
-      if (node.header.synopsis) {
-        const synopsis = document.createElement("span");
-        synopsis.className = "synopsis";
-        synopsis.textContent = node.header.synopsis;
-        body.append(synopsis);
-      }
-      row.append(body);
-      row.addEventListener("click", () => void choose(node.header.id, false));
-      row.addEventListener("contextmenu", (event) => {
-        const found = book ? findNode(book.nodes, node.header.id) : null;
-        if (found) showContextMenu(event, found.node, found.ancestors);
-      });
-      row.addEventListener("dragstart", (event) => {
-        event.dataTransfer?.setData("text/plain", node.header.id);
-        event.dataTransfer!.effectAllowed = "move";
-      });
-      row.addEventListener("dragover", (event) => {
-        event.preventDefault();
-        row.classList.remove("drop-before", "drop-after", "drop-inside");
-        row.classList.add(dropClass(row, event.clientY, node.kind === "group"));
-      });
-      row.addEventListener("dragleave", () => row.classList.remove("drop-before", "drop-after", "drop-inside"));
-      row.addEventListener("drop", (event) => {
-        event.preventDefault();
-        const zone = dropZone(row, event.clientY, node.kind === "group");
-        row.classList.remove("drop-before", "drop-after", "drop-inside");
-        const moving = event.dataTransfer?.getData("text/plain");
-        if (moving) void drop(moving, node.header.id, zone);
-      });
-      outlineEl.append(row);
-      if (node.kind === "group" && !collapsed.has(node.header.id)) draw(node.children, depth + 1);
-    }
-  };
-  draw(book.nodes, 1);
+}
+
+function bookRowClass(): string {
+  return `node book${viewingBook() ? " selected" : ""}`;
+}
+
+function bookTwistButton(): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "twist";
+  fillTwist(button, bookOpen(), "book");
+  button.addEventListener("click", toggleBookRow);
+  return button;
+}
+
+function fillTwist(button: HTMLButtonElement, open: boolean, noun: string): void {
+  button.textContent = open ? "▾" : "▸";
+  button.setAttribute("aria-expanded", String(open));
+  button.setAttribute("aria-label", twistLabel(open, noun));
+}
+
+function twistLabel(open: boolean, noun: string): string {
+  return open ? `Collapse ${noun}` : `Expand ${noun}`;
+}
+
+function toggleBookRow(event: Event): void {
+  event.stopPropagation();
+  toggleCollapsed(BOOK_ID);
+  renderOutline();
+}
+
+function toggleCollapsed(id: string): void {
+  if (collapsed.has(id)) collapsed.delete(id);
+  else collapsed.add(id);
+}
+
+function bookBody(): HTMLElement {
+  const body = document.createElement("div");
+  body.className = "node-body";
+  const label = document.createElement("span");
+  label.className = "title";
+  label.textContent = book!.title || "Book";
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = `${bookWordCount()} words`;
+  body.append(label, meta);
+  return body;
+}
+
+function drawNodes(nodes: TreeNode[], depth: number): void {
+  for (const node of nodes) appendOutlineNode(node, depth);
+}
+
+function appendOutlineNode(node: TreeNode, depth: number): void {
+  outlineEl.append(outlineRow(node, depth));
+  if (expandedGroup(node)) drawNodes(node.children, depth + 1);
+}
+
+function expandedGroup(node: TreeNode): boolean {
+  return node.kind === "group" && !collapsed.has(node.header.id);
+}
+
+function outlineRow(node: TreeNode, depth: number): HTMLDivElement {
+  const row = document.createElement("div");
+  row.className = outlineRowClass(node);
+  row.dataset.id = node.header.id;
+  row.draggable = !isTrash(node);
+  row.style.paddingLeft = `${0.35 + depth * 0.85}rem`;
+  row.append(outlineGutter(node), outlineBody(node));
+  wireOutlineRow(row, node);
+  return row;
+}
+
+function outlineRowClass(node: TreeNode): string {
+  return `node ${node.kind}${trashClass(node)}${selectedClass(node)}`;
+}
+
+function trashClass(node: TreeNode): string {
+  return isTrash(node) ? " trash" : "";
+}
+
+function selectedClass(node: TreeNode): string {
+  return node.header.id === selectedId ? " selected" : "";
+}
+
+function outlineGutter(node: TreeNode): HTMLElement {
+  if (node.kind === "group") return folderTwist(node.header.id);
+  return twistSpacer();
+}
+
+function folderTwist(id: string): HTMLButtonElement {
+  const twist = document.createElement("button");
+  twist.type = "button";
+  twist.className = "twist";
+  fillTwist(twist, !collapsed.has(id), "folder");
+  twist.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleCollapsed(id);
+    renderOutline();
+  });
+  return twist;
+}
+
+function twistSpacer(): HTMLElement {
+  const spacer = document.createElement("span");
+  spacer.className = "twist-spacer";
+  return spacer;
+}
+
+function outlineBody(node: TreeNode): HTMLElement {
+  const body = document.createElement("div");
+  body.className = "node-body";
+  appendDivision(body, node);
+  const title = document.createElement("span");
+  title.className = "title";
+  title.textContent = outlineTitle(node);
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = `${node.header.status} · ${nodeWordCount(node)} words`;
+  body.append(title, meta);
+  appendSynopsis(body, node);
+  return body;
+}
+
+function appendDivision(body: HTMLElement, node: TreeNode): void {
+  const division = divisionOf(node);
+  if (!division) return;
+  const label = document.createElement("span");
+  label.className = "chapter-number";
+  label.textContent = divisionLabel(division);
+  body.append(label);
+}
+
+function appendSynopsis(body: HTMLElement, node: TreeNode): void {
+  if (!node.header.synopsis) return;
+  const synopsis = document.createElement("span");
+  synopsis.className = "synopsis";
+  synopsis.textContent = node.header.synopsis;
+  body.append(synopsis);
+}
+
+function wireOutlineRow(row: HTMLElement, node: TreeNode): void {
+  row.addEventListener("click", () => void choose(node.header.id, false));
+  row.addEventListener("contextmenu", (event) => openRowMenu(event, node.header.id));
+  row.addEventListener("dragstart", (event) => startRowDrag(event, node.header.id));
+  row.addEventListener("dragover", (event) => dragOverRow(event, row, node.kind === "group"));
+  row.addEventListener("dragleave", () => clearDropClasses(row));
+  row.addEventListener("drop", (event) => dropOnRow(event, row, node));
+}
+
+function openRowMenu(event: MouseEvent, id: string): void {
+  const found = rowNode(id);
+  if (found) showContextMenu(event, found.node, found.ancestors);
+}
+
+function rowNode(id: string): Selection | null {
+  if (!book) return null;
+  return findNode(book.nodes, id);
+}
+
+function startRowDrag(event: DragEvent, id: string): void {
+  event.dataTransfer?.setData("text/plain", id);
+  event.dataTransfer!.effectAllowed = "move";
+}
+
+function dragOverRow(event: DragEvent, row: HTMLElement, group: boolean): void {
+  event.preventDefault();
+  clearDropClasses(row);
+  row.classList.add(dropClass(row, event.clientY, group));
+}
+
+function clearDropClasses(row: HTMLElement): void {
+  row.classList.remove("drop-before", "drop-after", "drop-inside");
+}
+
+function dropOnRow(event: DragEvent, row: HTMLElement, node: TreeNode): void {
+  event.preventDefault();
+  const zone = dropZone(row, event.clientY, node.kind === "group");
+  clearDropClasses(row);
+  const moving = event.dataTransfer?.getData("text/plain");
+  if (moving) void drop(moving, node.header.id, zone);
 }
 
 function dropClass(row: HTMLElement, clientY: number, group: boolean): string {
@@ -708,9 +1123,25 @@ function dropClass(row: HTMLElement, clientY: number, group: boolean): string {
 }
 
 function dropZone(row: HTMLElement, clientY: number, group: boolean): DropZone {
+  const ratio = dropRatio(row, clientY);
+  if (insideZone(group, ratio)) return "inside";
+  return beforeOrAfter(ratio);
+}
+
+function dropRatio(row: HTMLElement, clientY: number): number {
   const rect = row.getBoundingClientRect();
-  const ratio = (clientY - rect.top) / rect.height;
-  if (group && ratio > 0.28 && ratio < 0.72) return "inside";
+  return (clientY - rect.top) / rect.height;
+}
+
+function insideZone(group: boolean, ratio: number): boolean {
+  return group && withinMiddle(ratio);
+}
+
+function withinMiddle(ratio: number): boolean {
+  return ratio > 0.28 && ratio < 0.72;
+}
+
+function beforeOrAfter(ratio: number): DropZone {
   return ratio < 0.5 ? "before" : "after";
 }
 
@@ -718,138 +1149,280 @@ function fillInspector(): void {
   const current = selected();
   inspector.hidden = !current;
   if (!current) return;
-  fieldTitle.value = current.node.header.title;
-  fieldSynopsis.value = current.node.header.synopsis;
-  fieldStatus.value = current.node.header.status;
-  fieldRole.value = current.node.header.role;
-  const unit = effectiveUnit(current.node);
-  fieldId.textContent = current.node.header.id;
-  const trash = isTrash(current.node);
+  fillInspectorFields(current.node);
+}
+
+function fillInspectorFields(node: TreeNode): void {
+  fieldTitle.value = node.header.title;
+  fieldSynopsis.value = node.header.synopsis;
+  fieldStatus.value = node.header.status;
+  fieldRole.value = node.header.role;
+  fieldId.textContent = node.header.id;
+  const trash = isTrash(node);
+  setInspectorDisabled(trash);
+  setUnitChecks(effectiveUnit(node), trash);
+  setGroupButtons(node, trash);
+}
+
+function setInspectorDisabled(trash: boolean): void {
   fieldTitle.disabled = trash;
   fieldSynopsis.disabled = trash;
   fieldStatus.disabled = trash;
   fieldRole.disabled = trash;
-  for (const input of unitInputs) {
-    input.checked = input.value === unit;
-    input.disabled = trash;
-  }
-  const group = current.node.kind === "group";
-  editProse.hidden = trash || !group || editingProse;
-  readGroup.hidden = trash || !group || !editingProse;
+}
+
+function setUnitChecks(unit: Unit, trash: boolean): void {
+  for (const input of unitInputs) setUnitInput(input, unit, trash);
+}
+
+function setUnitInput(input: HTMLInputElement, unit: Unit, trash: boolean): void {
+  input.checked = input.value === unit;
+  input.disabled = trash;
+}
+
+function setGroupButtons(node: TreeNode, trash: boolean): void {
+  const group = node.kind === "group";
+  editProse.hidden = hideEditProse(trash, group);
+  readGroup.hidden = hideReadGroup(trash, group);
+}
+
+function hideEditProse(trash: boolean, group: boolean): boolean {
+  return trash || notShowingEdit(group);
+}
+
+function notShowingEdit(group: boolean): boolean {
+  return !group || editingProse;
+}
+
+function hideReadGroup(trash: boolean, group: boolean): boolean {
+  return trash || notShowingRead(group);
+}
+
+function notShowingRead(group: boolean): boolean {
+  return !group || !editingProse;
 }
 
 async function choose(id: string, prose: boolean): Promise<void> {
-  if (selectedId === id && editingProse === prose) {
+  if (sameSelection(id, prose)) {
     showCurrent();
     return;
   }
+  await switchSelection(id, prose);
+  showCurrent();
+}
+
+function sameSelection(id: string, prose: boolean): boolean {
+  return selectedId === id && editingProse === prose;
+}
+
+async function switchSelection(id: string, prose: boolean): Promise<void> {
   navigating = true;
   try {
-    cancelSave();
-    await flush();
-    if (dirty) await flush();
-    const leaving = takeVisit();
-    if (leaving) trail = noteVisit(trail, leaving);
-    selectedId = id;
-    editingProse = prose;
-    const current = selected();
-    loadDocument(current && editing() ? current.node.body : "", true);
+    await commitLeaving(id, prose);
   } finally {
     navigating = false;
   }
-  showCurrent();
+}
+
+async function commitLeaving(id: string, prose: boolean): Promise<void> {
+  cancelSave();
+  await flushTwice();
+  noteLeaving();
+  selectedId = id;
+  editingProse = prose;
+  loadSelectedBody();
+}
+
+function noteLeaving(): void {
+  const leaving = takeVisit();
+  if (leaving) trail = noteVisit(trail, leaving);
 }
 
 async function refresh(keep: string | null, resetHistory = false): Promise<void> {
   if (!book) return;
+  await reloadBook(keep, resetHistory);
+}
+
+async function reloadBook(keep: string | null, resetHistory: boolean): Promise<void> {
   const previousId = selectedId;
   const previousProse = editingProse;
-  book = await loadBook(fs, book.root);
-  if (keep === BOOK_ID || (keep && findNode(book.nodes, keep))) selectedId = keep;
-  else selectedId = BOOK_ID;
-  const changed = resetHistory || selectedId !== previousId || editingProse !== previousProse;
+  const loaded = await loadBook(fs, book!.root);
+  book = loaded;
+  selectedId = keptId(keep);
+  const changed = selectionChanged(resetHistory, previousId, previousProse);
   if (changed) trail = emptyTrail();
-  bookTitle.value = book.title;
-  const current = selected();
-  if (current && editing()) loadDocument(current.node.body, changed);
-  else if (changed) loadDocument("", true);
+  bookTitle.value = loaded.title;
+  loadRefreshedDocument(changed);
   renderOutline();
   fillInspector();
   drawReading();
   drawPreview();
-  showWarnings(book.warnings);
+  showWarnings(loaded.warnings);
+}
+
+function keptId(keep: string | null): string {
+  if (keepable(keep)) return keep;
+  return BOOK_ID;
+}
+
+function keepable(keep: string | null): keep is string {
+  return keep === BOOK_ID || nodeKept(keep);
+}
+
+function nodeKept(keep: string | null): boolean {
+  return keep != null && bookHas(keep);
+}
+
+function bookHas(id: string): boolean {
+  return book != null && findNode(book.nodes, id) != null;
+}
+
+function selectionChanged(resetHistory: boolean, previousId: string | null, previousProse: boolean): boolean {
+  return resetHistory || idOrProseChanged(previousId, previousProse);
+}
+
+function idOrProseChanged(previousId: string | null, previousProse: boolean): boolean {
+  return selectedId !== previousId || editingProse !== previousProse;
+}
+
+function loadRefreshedDocument(changed: boolean): void {
+  const current = selected();
+  if (refreshEditing(current)) loadDocument(current.node.body, changed);
+  else loadBlankIfChanged(changed);
+}
+
+function refreshEditing(current: Selection | null): current is Selection {
+  return current != null && editing();
+}
+
+function loadBlankIfChanged(changed: boolean): void {
+  if (changed) loadDocument("", true);
 }
 
 async function openRoot(root: string): Promise<void> {
-  let full: string;
+  const full = await canonicalRoot(root);
+  if (!full) return;
+  await openCanonical(full);
+}
+
+async function canonicalRoot(root: string): Promise<string | null> {
   try {
-    full = await fs.canonicalize(root);
+    return await fs.canonicalize(root);
   } catch (error) {
     showWarnings([String(error)]);
-    return;
+    return null;
   }
-  let pictureWarning = "";
-  try {
-    await allowBook(full);
-  } catch (error) {
-    pictureWarning = `Pictures in this book cannot be shown. ${String(error)}`;
-  }
-  book = await loadBook(fs, full);
+}
+
+async function openCanonical(full: string): Promise<void> {
+  const pictureWarning = await pictureAccess(full);
+  const loaded = await loadBook(fs, full);
+  book = loaded;
   selectedId = null;
   editingProse = false;
   trail = emptyTrail();
-  bookTitle.value = book.title;
-  document.title = book.title || "Bookwriter";
+  bookTitle.value = loaded.title;
+  document.title = titled(loaded.title);
   saveState.textContent = "Saved";
   await refresh(BOOK_ID, true);
   if (pictureWarning) showWarnings([...(book?.warnings ?? []), pictureWarning]);
+}
+
+async function pictureAccess(full: string): Promise<string> {
+  try {
+    await allowBook(full);
+    return "";
+  } catch (error) {
+    return `Pictures in this book cannot be shown. ${String(error)}`;
+  }
+}
+
+function titled(title: string): string {
+  return title || "Bookwriter";
 }
 
 async function openFolder(): Promise<void> {
   const picked = await open({
     directory: true,
     title: "Open book",
-    defaultPath: book ? parentPath(book.root) : undefined,
+    defaultPath: bookParent(),
   });
   if (typeof picked === "string") await openRoot(picked);
 }
 
+function bookParent(): string | undefined {
+  return book ? parentPath(book.root) : undefined;
+}
+
 async function exportManuscript(): Promise<void> {
   if (!book) return;
+  await writeManuscriptExport();
+}
+
+async function writeManuscriptExport(): Promise<void> {
   await flush();
-  book = await loadBook(fs, book.root);
+  const loaded = await loadBook(fs, book!.root);
+  book = loaded;
   const destination = await save({
     title: "Export manuscript",
-    defaultPath: joinPath(book.root, `${slugify(book.title) || "manuscript"}.md`),
+    defaultPath: joinPath(loaded.root, `${exportStem(loaded.title)}.md`),
     filters: [{ name: "Markdown", extensions: ["md"] }],
   });
   if (typeof destination !== "string") return;
-  const result = exportBook(manuscriptNodes(book.nodes));
-  const text = result.markdown.endsWith("\n") ? result.markdown : result.markdown + "\n";
-  await fs.writeText(destination, text);
+  await writeMarkdownExport(destination);
+}
+
+function exportStem(title: string): string {
+  return slugify(title) || "manuscript";
+}
+
+async function writeMarkdownExport(destination: string): Promise<void> {
+  const result = exportBook(manuscriptNodes(book!.nodes));
+  await fs.writeText(destination, withTrailingNewline(result.markdown));
   showWarnings(result.warnings);
-  saveState.textContent = result.warnings.length ? "Exported with warnings" : "Exported";
+  saveState.textContent = exportStatus(result.warnings.length);
+}
+
+function withTrailingNewline(markdown: string): string {
+  return markdown.endsWith("\n") ? markdown : markdown + "\n";
+}
+
+function exportStatus(warningCount: number): string {
+  return warningCount ? "Exported with warnings" : "Exported";
 }
 
 async function exportPdfManuscript(): Promise<void> {
   if (!book) return;
+  await safePdfExport();
+}
+
+async function safePdfExport(): Promise<void> {
   try {
-    await flush();
-    book = await loadBook(fs, book.root);
-    const destination = await save({
-      title: "Export PDF",
-      defaultPath: joinPath(book.root, `${slugify(book.title) || "manuscript"}.pdf`),
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
-    if (typeof destination !== "string") return;
-    const result = await exportPdfWithPictures(manuscriptNodes(book.nodes), book.title, fs, book.root, { rasterize: rasterizePicture });
-    await fs.writeText(destination, result.pdf);
-    showWarnings(result.warnings);
-    saveState.textContent = result.warnings.length ? "Exported with warnings" : "Exported";
+    await writePdfExport();
   } catch (error) {
     showWarnings([`PDF export failed: ${String(error)}`]);
     saveState.textContent = "Export failed";
   }
+}
+
+async function writePdfExport(): Promise<void> {
+  await flush();
+  const loaded = await loadBook(fs, book!.root);
+  book = loaded;
+  const destination = await save({
+    title: "Export PDF",
+    defaultPath: joinPath(loaded.root, `${exportStem(loaded.title)}.pdf`),
+    filters: [{ name: "PDF", extensions: ["pdf"] }],
+  });
+  if (typeof destination !== "string") return;
+  await writePdfFile(destination);
+}
+
+async function writePdfFile(destination: string): Promise<void> {
+  const result = await exportPdfWithPictures(manuscriptNodes(book!.nodes), book!.title, fs, book!.root, { rasterize: rasterizePicture });
+  await fs.writeText(destination, result.pdf);
+  showWarnings(result.warnings);
+  saveState.textContent = exportStatus(result.warnings.length);
 }
 
 createDialog.addEventListener("click", (event) => {
@@ -900,19 +1473,24 @@ function menuButton(entry: MenuEntry, keepFocus: boolean): HTMLButtonElement {
   const name = document.createElement("span");
   name.textContent = entry.label;
   button.append(name);
-  if (entry.shortcut) {
-    const key = document.createElement("span");
-    key.className = "menu-key";
-    key.textContent = entry.shortcut;
-    button.append(key);
-  }
+  appendShortcut(button, entry.shortcut);
   if (keepFocus) button.addEventListener("pointerdown", (event) => event.preventDefault());
-  button.addEventListener("click", (click) => {
-    click.stopPropagation();
-    closeContextMenu();
-    entry.run();
-  });
+  button.addEventListener("click", (click) => runMenuEntry(click, entry));
   return button;
+}
+
+function appendShortcut(button: HTMLButtonElement, shortcut: string | undefined): void {
+  if (!shortcut) return;
+  const key = document.createElement("span");
+  key.className = "menu-key";
+  key.textContent = shortcut;
+  button.append(key);
+}
+
+function runMenuEntry(click: Event, entry: MenuEntry): void {
+  click.stopPropagation();
+  closeContextMenu();
+  entry.run();
 }
 
 function showBarMenu(anchor: HTMLElement, actions: MenuEntry[]): void {
@@ -927,82 +1505,166 @@ function showBarMenu(anchor: HTMLElement, actions: MenuEntry[]): void {
 function toggleBarMenu(event: Event, anchor: HTMLElement, actions: MenuEntry[]): void {
   event.preventDefault();
   event.stopPropagation();
-  if (!contextMenu.hidden && contextMenu.dataset.menu === anchor.id) {
-    closeContextMenu();
-    return;
-  }
-  showBarMenu(anchor, actions);
+  if (barMenuOpen(anchor)) closeContextMenu();
+  else showBarMenu(anchor, actions);
+}
+
+function barMenuOpen(anchor: HTMLElement): boolean {
+  return !contextMenu.hidden && contextMenu.dataset.menu === anchor.id;
 }
 
 function placeContextMenu(x: number, y: number): void {
   contextMenu.hidden = false;
   contextMenu.style.left = `${x}px`;
   contextMenu.style.top = `${y}px`;
+  clampContextMenu(x, y);
+}
+
+function clampContextMenu(x: number, y: number): void {
   const rect = contextMenu.getBoundingClientRect();
+  clampMenuLeft(rect, x);
+  clampMenuTop(rect, y);
+}
+
+function clampMenuLeft(rect: DOMRect, x: number): void {
   if (rect.right > window.innerWidth) contextMenu.style.left = `${Math.max(8, x - rect.width)}px`;
+}
+
+function clampMenuTop(rect: DOMRect, y: number): void {
   if (rect.bottom > window.innerHeight) contextMenu.style.top = `${Math.max(8, y - rect.height)}px`;
 }
 
 function showContextMenu(event: MouseEvent, node: TreeNode, ancestors: TreeNode[]): void {
   event.preventDefault();
   clearBarMenu();
-  const inTrash = isTrash(node) || ancestors.some(isTrash);
-  const actions: { label: string; run: () => Promise<void> }[] = [];
-  if (node.kind === "group") {
-    actions.push({ label: "Add text", run: () => addTextAtTop(node.header.id) });
-    actions.push({ label: "Add folder", run: () => addInside(node.header.id, "group") });
-  } else {
-    actions.push({ label: "Add text", run: () => addTextBelow(node.header.id) });
-  }
-  if (!inTrash) actions.push({ label: "Delete", run: () => deleteItem(node.header.id) });
-  contextMenu.replaceChildren();
-  for (const action of actions) {
-    contextMenu.append(menuButton({ label: action.label, run: () => void action.run() }, false));
-  }
+  fillContextActions(node, ancestors);
   placeContextMenu(event.clientX, event.clientY);
+}
+
+function fillContextActions(node: TreeNode, ancestors: TreeNode[]): void {
+  const actions = contextActions(node, nodeInTrash(node, ancestors));
+  contextMenu.replaceChildren();
+  for (const action of actions) appendContextAction(action);
+}
+
+function nodeInTrash(node: TreeNode, ancestors: TreeNode[]): boolean {
+  return isTrash(node) || ancestors.some(isTrash);
+}
+
+function contextActions(node: TreeNode, inTrash: boolean): ContextAction[] {
+  const actions = node.kind === "group" ? groupActions(node) : sectionActions(node);
+  return withDelete(actions, node, inTrash);
+}
+
+function groupActions(node: TreeNode): ContextAction[] {
+  return [
+    { label: "Add text", run: () => addTextAtTop(node.header.id) },
+    { label: "Add folder", run: () => addInside(node.header.id, "group") },
+  ];
+}
+
+function sectionActions(node: TreeNode): ContextAction[] {
+  return [{ label: "Add text", run: () => addTextBelow(node.header.id) }];
+}
+
+function withDelete(actions: ContextAction[], node: TreeNode, inTrash: boolean): ContextAction[] {
+  if (inTrash) return actions;
+  return [...actions, { label: "Delete", run: () => deleteItem(node.header.id) }];
+}
+
+function appendContextAction(action: ContextAction): void {
+  contextMenu.append(menuButton({ label: action.label, run: () => void action.run() }, false));
 }
 
 function showCommandMenu(event: MouseEvent): void {
   event.preventDefault();
   clearBarMenu();
-  const pos = editor.posAtCoords({ x: event.clientX, y: event.clientY });
-  const range = editor.state.selection.main;
-  const keepsSelection = pos != null && !range.empty && pos >= range.from && pos <= range.to;
-  if (!keepsSelection) placeCursor(pos ?? editor.state.doc.length);
+  placeCommandCursor(event);
   contextMenu.replaceChildren();
-  const mac = usesMacShortcuts();
-  for (const command of COMMANDS) {
-    contextMenu.append(menuButton({
-      label: command.name,
-      shortcut: command.accelerator ? formatAccelerator(command.accelerator, mac) : undefined,
-      run: () => runCommand(command.id),
-    }, false));
-  }
+  appendCommandItems();
   placeContextMenu(event.clientX, event.clientY);
+}
+
+function placeCommandCursor(event: MouseEvent): void {
+  const pos = editor.posAtCoords({ x: event.clientX, y: event.clientY });
+  if (!keepsSelection(pos, editor.state.selection.main)) placeCursor(pos ?? editor.state.doc.length);
+}
+
+function keepsSelection(pos: number | null, range: { empty: boolean; from: number; to: number }): boolean {
+  return pos != null && selectionCovers(pos, range);
+}
+
+function selectionCovers(pos: number, range: { empty: boolean; from: number; to: number }): boolean {
+  return !range.empty && posInside(pos, range);
+}
+
+function posInside(pos: number, range: { from: number; to: number }): boolean {
+  return pos >= range.from && pos <= range.to;
+}
+
+function appendCommandItems(): void {
+  const mac = usesMacShortcuts();
+  for (const command of COMMANDS) appendCommandItem(command, mac);
+}
+
+function appendCommandItem(command: MarkupCommand, mac: boolean): void {
+  contextMenu.append(menuButton({
+    label: command.name,
+    shortcut: commandShortcut(command.accelerator, mac),
+    run: () => runCommand(command.id),
+  }, false));
+}
+
+function commandShortcut(accelerator: string | undefined, mac: boolean): string | undefined {
+  return accelerator ? formatAccelerator(accelerator, mac) : undefined;
 }
 
 async function addTextAtTop(parentId: string): Promise<void> {
   if (!book) return;
+  await insertTextAtTop(parentId);
+}
+
+async function insertTextAtTop(parentId: string): Promise<void> {
   const title = await askTitle("New text");
   if (!title) return;
+  await placeTextAtTop(parentId, title);
+}
+
+async function placeTextAtTop(parentId: string, title: string): Promise<void> {
   await flush();
-  const id = await createNode(fs, book, parentId, "section", title);
-  book = await loadBook(fs, book.root);
-  const parent = findNode(book.nodes, parentId);
-  const first = parent?.node.children.find((child) => child.header.id !== id);
-  if (first) await moveNode(fs, book, id, first.header.id, "before");
+  const id = await createNode(fs, book!, parentId, "section", title);
+  book = await loadBook(fs, book!.root);
+  await moveBeforeFirst(parentId, id);
   collapsed.delete(parentId);
   editingProse = false;
   await refresh(id);
   await choose(id, false);
 }
 
+async function moveBeforeFirst(parentId: string, id: string): Promise<void> {
+  const parent = findNode(book!.nodes, parentId);
+  const first = parent?.node.children.find((child) => child.header.id !== id);
+  if (first) await moveNode(fs, book!, id, first.header.id, "before");
+}
+
 async function addInside(parentId: string, kind: "group" | "section"): Promise<void> {
   if (!book) return;
-  const title = await askTitle(kind === "group" ? "New folder" : "New text");
+  await insertInside(parentId, kind);
+}
+
+async function insertInside(parentId: string, kind: "group" | "section"): Promise<void> {
+  const title = await askTitle(kindLabel(kind));
   if (!title) return;
+  await finishInside(parentId, kind, title);
+}
+
+function kindLabel(kind: "group" | "section"): string {
+  return kind === "group" ? "New folder" : "New text";
+}
+
+async function finishInside(parentId: string, kind: "group" | "section", title: string): Promise<void> {
   await flush();
-  const id = await createNode(fs, book, parentId, kind, title);
+  const id = await createNode(fs, book!, parentId, kind, title);
   collapsed.delete(parentId);
   editingProse = kind === "group";
   await refresh(id);
@@ -1011,14 +1673,25 @@ async function addInside(parentId: string, kind: "group" | "section"): Promise<v
 
 async function addTextBelow(sectionId: string): Promise<void> {
   if (!book) return;
+  await insertTextBelow(sectionId);
+}
+
+async function insertTextBelow(sectionId: string): Promise<void> {
   const title = await askTitle("New text");
   if (!title) return;
+  await placeTextBelow(sectionId, title);
+}
+
+async function placeTextBelow(sectionId: string, title: string): Promise<void> {
   await flush();
-  const found = findNode(book.nodes, sectionId);
+  const found = findNode(book!.nodes, sectionId);
   if (!found) return;
-  const parent = found.ancestors.at(-1);
-  const id = await createNode(fs, book, parent?.header.id ?? null, "section", title);
-  book = await loadBook(fs, book.root);
+  await finishTextBelow(sectionId, title, found.ancestors.at(-1));
+}
+
+async function finishTextBelow(sectionId: string, title: string, parent: TreeNode | undefined): Promise<void> {
+  const id = await createNode(fs, book!, parent?.header.id ?? null, "section", title);
+  book = await loadBook(fs, book!.root);
   await moveNode(fs, book, id, sectionId, "after");
   if (parent) collapsed.delete(parent.header.id);
   editingProse = false;
@@ -1028,32 +1701,92 @@ async function addTextBelow(sectionId: string): Promise<void> {
 
 async function deleteItem(id: string): Promise<void> {
   if (!book) return;
-  const current = findNode(book.nodes, id);
-  if (!current || isTrash(current.node) || current.ancestors.some(isTrash)) return;
+  await removeItem(id);
+}
+
+async function removeItem(id: string): Promise<void> {
+  const current = findNode(book!.nodes, id);
+  if (blockedDelete(current)) return;
+  await finishDelete(id, current);
+}
+
+function blockedDelete(current: Selection | null): current is null {
+  return current == null || trashedNode(current);
+}
+
+function trashedNode(current: Selection): boolean {
+  return isTrash(current.node) || current.ancestors.some(isTrash);
+}
+
+async function finishDelete(id: string, current: Selection): Promise<void> {
   if (selectedId === id) await flush();
-  const next =
-    [...current.ancestors].reverse().find((node) => !isTrash(node))?.header.id ??
-    manuscriptNodes(book.nodes)[0]?.header.id ??
-    null;
-  await deleteNode(fs, book, id);
+  const next = nextAfterDelete(current);
+  await deleteNode(fs, book!, id);
+  clearProseIfDeleted(id);
+  await refresh(refreshAfterDelete(id, next));
+}
+
+function clearProseIfDeleted(id: string): void {
   if (selectedId === id) editingProse = false;
-  await refresh(selectedId === id ? next : selectedId);
+}
+
+function refreshAfterDelete(id: string, next: string | null): string | null {
+  return selectedId === id ? next : selectedId;
+}
+
+function nextAfterDelete(current: Selection): string | null {
+  return survivingAncestor(current) ?? firstManuscriptId();
+}
+
+function survivingAncestor(current: Selection): string | undefined {
+  return [...current.ancestors].reverse().find((node) => !isTrash(node))?.header.id;
+}
+
+function firstManuscriptId(): string | null {
+  return manuscriptNodes(book!.nodes)[0]?.header.id ?? null;
 }
 
 async function create(kind: "group" | "section"): Promise<void> {
   if (!book) return;
-  const title = await askTitle(kind === "group" ? "New folder" : "New text");
+  await createTitled(kind);
+}
+
+async function createTitled(kind: "group" | "section"): Promise<void> {
+  const title = await askTitle(kindLabel(kind));
   if (!title) return;
+  await finishCreate(kind, title);
+}
+
+async function finishCreate(kind: "group" | "section", title: string): Promise<void> {
   await flush();
-  const current = selected();
-  const underTrash = current ? isTrash(current.node) || current.ancestors.some(isTrash) : false;
-  let parentId: string | null = null;
-  if (!underTrash && current?.node.kind === "group") parentId = current.node.header.id;
-  else if (!underTrash && current) parentId = current.ancestors.at(-1)?.header.id ?? null;
-  const id = await createNode(fs, book, parentId, kind, title);
+  const id = await createNode(fs, book!, createParentId(), kind, title);
   editingProse = kind === "group";
   await refresh(id);
   await choose(id, kind === "group");
+}
+
+function createParentId(): string | null {
+  const current = selected();
+  if (underTrash(current)) return null;
+  return parentFor(current);
+}
+
+function underTrash(current: Selection | null): boolean {
+  return current != null && nodeOrAncestorTrash(current);
+}
+
+function nodeOrAncestorTrash(current: Selection): boolean {
+  return isTrash(current.node) || current.ancestors.some(isTrash);
+}
+
+function parentFor(current: Selection | null): string | null {
+  if (current?.node.kind === "group") return current.node.header.id;
+  return ancestorParent(current);
+}
+
+function ancestorParent(current: Selection | null): string | null {
+  if (!current) return null;
+  return current.ancestors.at(-1)?.header.id ?? null;
 }
 
 async function deleteSelected(): Promise<void> {
@@ -1061,26 +1794,29 @@ async function deleteSelected(): Promise<void> {
 }
 
 async function drop(movingId: string, targetId: string, zone: DropZone): Promise<void> {
-  if (!book || movingId === targetId) return;
+  if (cannotDrop(movingId, targetId)) return;
+  await finishDrop(movingId, targetId, zone);
+}
+
+function cannotDrop(movingId: string, targetId: string): boolean {
+  return book == null || movingId === targetId;
+}
+
+async function finishDrop(movingId: string, targetId: string, zone: DropZone): Promise<void> {
   await flush();
-  await moveNode(fs, book, movingId, targetId, zone);
+  await moveNode(fs, book!, movingId, targetId, zone);
   await refresh(movingId);
 }
 
 function runCommand(id: CommandId): void {
-  if (id === "picture") {
-    void choosePicture();
-    return;
-  }
+  if (id === "picture") void choosePicture();
+  else applyEditingCommand(id);
+}
+
+function applyEditingCommand(id: CommandId): void {
   if (!editing()) return;
   const range = editor.state.selection.main;
-  const bodies: string[] = [];
-  if (book) {
-    walk(book.nodes, (node) => {
-      bodies.push(node.header.id === selectedId ? editor.state.doc.toString() : node.body);
-    });
-  }
-  const result = applyCommand(id, editor.state.doc.toString(), range.anchor, range.head, latestLanguage(bodies));
+  const result = applyCommand(id, editor.state.doc.toString(), range.anchor, range.head, latestLanguage(commandBodies()));
   editor.dispatch({
     changes: { from: 0, to: editor.state.doc.length, insert: result.text },
     selection: { anchor: result.anchor, head: result.head },
@@ -1088,23 +1824,60 @@ function runCommand(id: CommandId): void {
   editor.focus();
 }
 
+function commandBodies(): string[] {
+  const bodies: string[] = [];
+  if (book) walk(book.nodes, (node) => bodies.push(commandBody(node)));
+  return bodies;
+}
+
+function commandBody(node: TreeNode): string {
+  return node.header.id === selectedId ? editor.state.doc.toString() : node.body;
+}
+
 async function choosePicture(): Promise<void> {
-  if (!book || !editing()) return;
-  const root = book.root;
+  if (cannotPickPicture()) return;
+  await pickPicture(book!.root);
+}
+
+function cannotPickPicture(): boolean {
+  return book == null || !editing();
+}
+
+async function pickPicture(root: string): Promise<void> {
   const picked = await open({
     title: "Picture",
     defaultPath: root,
     multiple: false,
     filters: [{ name: "Pictures", extensions: PICTURE_EXTENSIONS }],
   });
-  if (typeof picked !== "string" || !book || book.root !== root || !editing()) return;
-  let relative: string;
+  if (!pictureStillOpen(picked, root)) return;
+  await insertPicture(root, picked);
+}
+
+function pictureStillOpen(picked: unknown, root: string): picked is string {
+  return typeof picked === "string" && samePictureBook(root);
+}
+
+function samePictureBook(root: string): boolean {
+  return book?.root === root && editing();
+}
+
+async function insertPicture(root: string, picked: string): Promise<void> {
+  const relative = await movedPicture(root, picked);
+  if (relative == null) return;
+  dispatchPicture(relative);
+}
+
+async function movedPicture(root: string, picked: string): Promise<string | null> {
   try {
-    relative = await placePicture(fs, root, picked);
+    return await placePicture(fs, root, picked);
   } catch (error) {
     showWarnings([`The picture could not be moved into the book. ${String(error)}`]);
-    return;
+    return null;
   }
+}
+
+function dispatchPicture(relative: string): void {
   const range = editor.state.selection.main;
   const result = applyCommand("picture", editor.state.doc.toString(), range.anchor, range.head, "", relative);
   editor.dispatch({
@@ -1123,17 +1896,25 @@ function drawPalette(): void {
   const matches = matchingCommands();
   if (paletteIndex >= matches.length) paletteIndex = 0;
   paletteList.replaceChildren();
-  matches.forEach((command, index) => {
-    const item = document.createElement("li");
-    item.textContent = command.accelerator ? `${command.name}  ${command.inserts}` : `${command.name}  ${command.inserts}`;
-    if (index === paletteIndex) item.className = "active";
-    item.addEventListener("mousedown", (event) => {
-      event.preventDefault();
-      closePalette();
-      runCommand(command.id);
-    });
-    paletteList.append(item);
-  });
+  matches.forEach(appendPaletteItem);
+}
+
+function appendPaletteItem(command: MarkupCommand, index: number): void {
+  const item = document.createElement("li");
+  item.textContent = paletteLabel(command);
+  if (index === paletteIndex) item.className = "active";
+  item.addEventListener("mousedown", (event) => activatePalette(event, command.id));
+  paletteList.append(item);
+}
+
+function paletteLabel(command: MarkupCommand): string {
+  return command.accelerator ? `${command.name}  ${command.inserts}` : `${command.name}  ${command.inserts}`;
+}
+
+function activatePalette(event: Event, id: CommandId): void {
+  event.preventDefault();
+  closePalette();
+  runCommand(id);
 }
 
 function openPalette(): void {
@@ -1150,16 +1931,22 @@ function closePalette(): void {
 
 function openReminder(): void {
   reminderRows.replaceChildren();
-  for (const command of COMMANDS) {
-    const row = document.createElement("tr");
-    const name = document.createElement("td");
-    name.textContent = command.accelerator ? `${command.name}` : command.name;
-    const inserts = document.createElement("td");
-    inserts.textContent = command.inserts;
-    row.append(name, inserts);
-    reminderRows.append(row);
-  }
+  for (const command of COMMANDS) appendReminderRow(command);
   reminder.hidden = false;
+}
+
+function appendReminderRow(command: MarkupCommand): void {
+  const row = document.createElement("tr");
+  const name = document.createElement("td");
+  name.textContent = reminderName(command);
+  const inserts = document.createElement("td");
+  inserts.textContent = command.inserts;
+  row.append(name, inserts);
+  reminderRows.append(row);
+}
+
+function reminderName(command: MarkupCommand): string {
+  return command.accelerator ? `${command.name}` : command.name;
 }
 
 function runEdit(action: () => Promise<void>, label: string): void {
@@ -1168,10 +1955,21 @@ function runEdit(action: () => Promise<void>, label: string): void {
 
 function activeField(): HTMLInputElement | HTMLTextAreaElement | null {
   const active = document.activeElement;
-  if ((active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) && !active.readOnly && !active.disabled) {
-    return active;
-  }
+  if (editableField(active)) return active;
   return null;
+}
+
+function editableField(active: Element | null): active is HTMLInputElement | HTMLTextAreaElement {
+  if (!isTextField(active)) return false;
+  return fieldOpen(active);
+}
+
+function isTextField(active: Element | null): active is HTMLInputElement | HTMLTextAreaElement {
+  return active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+}
+
+function fieldOpen(active: HTMLInputElement | HTMLTextAreaElement): boolean {
+  return !active.readOnly && !active.disabled;
 }
 
 function replaceFieldSelection(field: HTMLInputElement | HTMLTextAreaElement, text: string): void {
@@ -1184,10 +1982,15 @@ function replaceFieldSelection(field: HTMLInputElement | HTMLTextAreaElement, te
 
 async function editCopy(): Promise<void> {
   const field = activeField();
-  if (field) {
-    await writeText(field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0));
-    return;
-  }
+  if (field) await copyField(field);
+  else await copyEditor();
+}
+
+async function copyField(field: HTMLInputElement | HTMLTextAreaElement): Promise<void> {
+  await writeText(field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0));
+}
+
+async function copyEditor(): Promise<void> {
   if (!editing()) return;
   const range = editor.state.selection.main;
   await writeText(editor.state.sliceDoc(range.from, range.to));
@@ -1195,11 +1998,16 @@ async function editCopy(): Promise<void> {
 
 async function editCut(): Promise<void> {
   const field = activeField();
-  if (field) {
-    await writeText(field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0));
-    replaceFieldSelection(field, "");
-    return;
-  }
+  if (field) await cutField(field);
+  else await cutEditor();
+}
+
+async function cutField(field: HTMLInputElement | HTMLTextAreaElement): Promise<void> {
+  await writeText(field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0));
+  replaceFieldSelection(field, "");
+}
+
+async function cutEditor(): Promise<void> {
   if (!editing()) return;
   const range = editor.state.selection.main;
   await writeText(editor.state.sliceDoc(range.from, range.to));
@@ -1212,10 +2020,11 @@ async function editCut(): Promise<void> {
 async function editPaste(): Promise<void> {
   const text = await readText();
   const field = activeField();
-  if (field) {
-    replaceFieldSelection(field, text);
-    return;
-  }
+  if (field) replaceFieldSelection(field, text);
+  else pasteEditor(text);
+}
+
+function pasteEditor(text: string): void {
   if (!editing()) return;
   const range = editor.state.selection.main;
   editor.dispatch({
@@ -1240,29 +2049,61 @@ function openReplace(): void {
 
 function goToNextMatch(): void {
   if (!editing()) return;
-  if (searchWholeBook) void findInBook("next");
-  else findNext(editor);
+  stepMatch("next");
 }
 
 function goToPreviousMatch(): void {
   if (!editing()) return;
-  if (searchWholeBook) void findInBook("previous");
+  stepMatch("previous");
+}
+
+function stepMatch(direction: "next" | "previous"): void {
+  if (searchWholeBook) void findInBook(direction);
+  else stepLocalMatch(direction);
+}
+
+function stepLocalMatch(direction: "next" | "previous"): void {
+  if (direction === "next") findNext(editor);
   else findPrevious(editor);
 }
 
 /** Texts in tree order. The open buffer is used for the current node, so unsaved words are included. Trash is left out. */
 function searchParts(): FindPart[] {
   if (!book) return [];
+  return bookSearchParts();
+}
+
+function bookSearchParts(): FindPart[] {
   const current = selected();
   const parts: FindPart[] = [];
-  walk(manuscriptNodes(book.nodes), (node) => {
-    const text = current && node.header.id === current.node.header.id ? editor.state.doc.toString() : node.body;
-    parts.push({ id: node.header.id, text });
-  });
-  if (current && editing() && !parts.some((part) => part.id === current.node.header.id)) {
-    parts.push({ id: current.node.header.id, text: editor.state.doc.toString() });
-  }
+  walk(manuscriptNodes(book!.nodes), (node) => parts.push(searchPart(node, current)));
+  if (missingOpenPart(current, parts)) parts.push(openPart(current!));
   return parts;
+}
+
+function searchPart(node: TreeNode, current: Selection | null): FindPart {
+  return { id: node.header.id, text: searchPartText(node, current) };
+}
+
+function searchPartText(node: TreeNode, current: Selection | null): string {
+  if (openBuffer(node, current)) return editor.state.doc.toString();
+  return node.body;
+}
+
+function openBuffer(node: TreeNode, current: Selection | null): boolean {
+  return current != null && node.header.id === current.node.header.id;
+}
+
+function missingOpenPart(current: Selection | null, parts: FindPart[]): boolean {
+  return current != null && openPartMissing(current, parts);
+}
+
+function openPartMissing(current: Selection, parts: FindPart[]): boolean {
+  return editing() && !parts.some((part) => part.id === current.node.header.id);
+}
+
+function openPart(current: Selection): FindPart {
+  return { id: current.node.header.id, text: editor.state.doc.toString() };
 }
 
 function selectMatch(from: number, to: number): void {
@@ -1281,8 +2122,23 @@ function focusSearch(): void {
 /** The panel's next, previous, and Enter follow the whole book checkbox once the panel is open. */
 function wireBookFind(view: EditorView): void {
   const panel = view.dom.querySelector<HTMLElement>(".cm-search");
-  if (!panel || panel.dataset.bookFind) return;
+  if (bookFindWired(panel)) return;
+  attachBookFind(panel, view);
+}
+
+function bookFindWired(panel: HTMLElement | null): panel is null {
+  return panel == null || panel.dataset.bookFind != null;
+}
+
+function attachBookFind(panel: HTMLElement, view: EditorView): void {
   panel.dataset.bookFind = "true";
+  placeBookLabel(panel, bookLabel(bookCheckbox(), view));
+  panel.querySelector("button[name=next]")?.addEventListener("click", (event) => takeBookMatch("next", event), true);
+  panel.querySelector("button[name=prev]")?.addEventListener("click", (event) => takeBookMatch("previous", event), true);
+  panel.addEventListener("keydown", onBookFindKey, true);
+}
+
+function bookCheckbox(): HTMLInputElement {
   const box = document.createElement("input");
   box.type = "checkbox";
   box.name = "book";
@@ -1290,63 +2146,147 @@ function wireBookFind(view: EditorView): void {
   box.addEventListener("change", () => {
     searchWholeBook = box.checked;
   });
+  return box;
+}
+
+function bookLabel(box: HTMLInputElement, view: EditorView): HTMLLabelElement {
   const label = document.createElement("label");
   label.append(box, view.state.phrase("whole book"));
+  return label;
+}
+
+function placeBookLabel(panel: HTMLElement, label: HTMLLabelElement): void {
   const word = panel.querySelector('input[name="word"]')?.parentElement;
   if (word) word.after(label);
   else panel.append(label);
-  const take = (direction: "next" | "previous", event: Event) => {
-    if (!searchWholeBook) return;
-    event.stopImmediatePropagation();
-    event.preventDefault();
-    void findInBook(direction);
-  };
-  panel.querySelector("button[name=next]")?.addEventListener("click", (event) => take("next", event), true);
-  panel.querySelector("button[name=prev]")?.addEventListener("click", (event) => take("previous", event), true);
-  panel.addEventListener("keydown", (event) => {
-    if (!searchWholeBook || event.key !== "Enter" || event.altKey || event.metaKey || event.ctrlKey) return;
-    const target = event.target;
-    if (!(target instanceof HTMLInputElement) || target.name !== "search") return;
-    take(event.shiftKey ? "previous" : "next", event);
-  }, true);
+}
+
+function takeBookMatch(direction: "next" | "previous", event: Event): void {
+  if (!searchWholeBook) return;
+  event.stopImmediatePropagation();
+  event.preventDefault();
+  void findInBook(direction);
+}
+
+function onBookFindKey(event: KeyboardEvent): void {
+  if (ignoreBookFindKey(event)) return;
+  matchFromSearchField(event);
+}
+
+function ignoreBookFindKey(event: KeyboardEvent): boolean {
+  return !searchWholeBook || blockedFindKey(event);
+}
+
+function blockedFindKey(event: KeyboardEvent): boolean {
+  return event.key !== "Enter" || modifierFindKey(event);
+}
+
+function modifierFindKey(event: KeyboardEvent): boolean {
+  return event.altKey || metaOrCtrl(event);
+}
+
+function metaOrCtrl(event: KeyboardEvent): boolean {
+  return event.metaKey || event.ctrlKey;
+}
+
+function matchFromSearchField(event: KeyboardEvent): void {
+  if (!searchField(event.target)) return;
+  takeBookMatch(bookFindDirection(event), event);
+}
+
+function bookFindDirection(event: KeyboardEvent): "next" | "previous" {
+  return event.shiftKey ? "previous" : "next";
+}
+
+function searchField(target: EventTarget | null): target is HTMLInputElement {
+  return target instanceof HTMLInputElement && target.name === "search";
 }
 
 let finding = false;
 
 async function findInBook(direction: "next" | "previous"): Promise<void> {
-  if (finding || !editing() || !book) return;
+  if (findBusy()) return;
+  await seekInBook(direction);
+}
+
+function findBusy(): boolean {
+  return finding || notSearching();
+}
+
+function notSearching(): boolean {
+  return !editing() || book == null;
+}
+
+async function seekInBook(direction: "next" | "previous"): Promise<void> {
   const query = getSearchQuery(editor.state);
-  if (!query.valid) {
-    openSearchPanel(editor);
-    wireBookFind(editor);
-    return;
-  }
+  if (!query.valid) showSearchPanel();
+  else await seekValid(direction, query);
+}
+
+function showSearchPanel(): void {
+  openSearchPanel(editor);
+  wireBookFind(editor);
+}
+
+async function seekValid(direction: "next" | "previous", query: SearchQuery): Promise<void> {
   const current = selected();
   if (!current) return;
-  const from = direction === "next" ? editor.state.selection.main.to : editor.state.selection.main.from;
-  const hit = direction === "next"
-    ? nextMatch(searchParts(), current.node.header.id, from, query)
-    : previousMatch(searchParts(), current.node.header.id, from, query);
+  await revealHit(direction, current, query);
+}
+
+async function revealHit(direction: "next" | "previous", current: Selection, query: SearchQuery): Promise<void> {
+  const hit = bookHit(direction, current.node.header.id, query);
   if (!hit) return;
+  await showHit(hit, current.node.header.id, query);
+}
+
+function bookHit(direction: "next" | "previous", id: string, query: SearchQuery): FindHit | null {
+  const from = matchOrigin(direction);
+  if (direction === "next") return nextMatch(searchParts(), id, from, query);
+  return previousMatch(searchParts(), id, from, query);
+}
+
+function matchOrigin(direction: "next" | "previous"): number {
+  return direction === "next" ? editor.state.selection.main.to : editor.state.selection.main.from;
+}
+
+async function showHit(hit: FindHit, currentId: string, query: SearchQuery): Promise<void> {
   const fromPanel = editor.dom.querySelector(".cm-search")?.contains(document.activeElement) ?? false;
-  if (hit.id !== current.node.header.id) {
-    const found = findNode(book.nodes, hit.id);
-    if (!found) return;
-    finding = true;
-    try {
-      await choose(hit.id, found.node.kind === "group");
-      openSearchPanel(editor);
-      editor.dispatch({ effects: setSearchQuery.of(query) });
-      wireBookFind(editor);
-      if (hit.to <= editor.state.doc.length) selectMatch(hit.from, hit.to);
-      if (fromPanel) focusSearch();
-    } finally {
-      finding = false;
-    }
-    return;
-  }
+  if (hit.id !== currentId) await jumpToHit(hit, query, fromPanel);
+  else showLocalHit(hit, fromPanel);
+}
+
+function showLocalHit(hit: FindHit, fromPanel: boolean): void {
   selectMatch(hit.from, hit.to);
   if (fromPanel) focusSearch();
+}
+
+async function jumpToHit(hit: FindHit, query: SearchQuery, fromPanel: boolean): Promise<void> {
+  const found = findNode(book!.nodes, hit.id);
+  if (!found) return;
+  await landOnHit(hit, found.node.kind === "group", query, fromPanel);
+}
+
+async function landOnHit(hit: FindHit, prose: boolean, query: SearchQuery, fromPanel: boolean): Promise<void> {
+  finding = true;
+  try {
+    await openHit(hit, prose, query, fromPanel);
+  } finally {
+    finding = false;
+  }
+}
+
+async function openHit(hit: FindHit, prose: boolean, query: SearchQuery, fromPanel: boolean): Promise<void> {
+  await choose(hit.id, prose);
+  openSearchPanel(editor);
+  editor.dispatch({ effects: setSearchQuery.of(query) });
+  wireBookFind(editor);
+  selectHitIfPresent(hit);
+  if (fromPanel) focusSearch();
+}
+
+function selectHitIfPresent(hit: FindHit): void {
+  if (hit.to <= editor.state.doc.length) selectMatch(hit.from, hit.to);
 }
 
 async function installMenu(): Promise<void> {
@@ -1458,13 +2398,153 @@ editor.dom.addEventListener("click", (event) => {
   if (!(target instanceof Node) || !editor.contentDOM.contains(target)) return;
   scrollPreviewToCursor();
 });
+function followFootnote(root: HTMLElement, event: MouseEvent): boolean {
+  const anchor = footnoteAnchor(event.target);
+  if (!anchor) return false;
+  return openFootnote(root, anchor, event);
+}
+
+function footnoteAnchor(target: EventTarget | null): HTMLAnchorElement | null {
+  const element = elementAt(target);
+  if (!element) return null;
+  return keptFootnote(element.closest("a"));
+}
+
+function keptFootnote(anchor: Element | null): HTMLAnchorElement | null {
+  if (!(anchor instanceof HTMLAnchorElement)) return null;
+  return footnoteHref(anchor);
+}
+
+function footnoteHref(anchor: HTMLAnchorElement): HTMLAnchorElement | null {
+  if (!isFootnoteHref(anchor.getAttribute("href"))) return null;
+  return anchor;
+}
+
+function isFootnoteHref(href: string | null): boolean {
+  return href != null && href.startsWith("#fn");
+}
+
+function openFootnote(root: HTMLElement, anchor: HTMLAnchorElement, event: MouseEvent): boolean {
+  const target = footnoteNode(root, anchor.getAttribute("href"));
+  if (!target) return false;
+  event.preventDefault();
+  scrollPaneTo(root, target);
+  syncMarkdown(target);
+  return true;
+}
+
+function syncMarkdown(target: HTMLElement): void {
+  if (!markdownShown()) return;
+  placeCursor(sourceSpot(target, editor.state.doc.toString()));
+}
+
+function markdownShown(): boolean {
+  return editing() && !editorHost.hidden;
+}
+
+function sourceSpot(element: HTMLElement, source: string): number {
+  const block = sourceBlock(element);
+  if (!block) return 0;
+  return renderedSpot(block, element, source);
+}
+
+function sourceBlock(element: HTMLElement): HTMLElement | null {
+  return lineBlock(element) ?? innerBlock(element);
+}
+
+function lineBlock(element: HTMLElement): HTMLElement | null {
+  return element.closest<HTMLElement>("[data-line]");
+}
+
+function innerBlock(element: HTMLElement): HTMLElement | null {
+  return element.querySelector<HTMLElement>("[data-line]");
+}
+
+function renderedSpot(block: HTMLElement, element: HTMLElement, source: string): number {
+  const start = Number(block.dataset.line);
+  const end = Number(block.dataset.end ?? String(start + 1));
+  if (!integerSpan(start, end)) return 0;
+  return sourceOffset(source, start, end, blockFraction(block, element));
+}
+
+function blockFraction(block: HTMLElement, element: HTMLElement): number {
+  const total = block.textContent?.length ?? 0;
+  if (!(total > 0)) return 0;
+  return rangeFraction(block, element, total);
+}
+
+function rangeFraction(block: HTMLElement, element: HTMLElement, total: number): number {
+  const measured = measureElement(block, element, total);
+  if (measured == null) return 0;
+  return measured;
+}
+
+function measureElement(block: HTMLElement, element: HTMLElement, total: number): number | null {
+  try {
+    return clampedFraction(block, element, total);
+  } catch {
+    return null;
+  }
+}
+
+function clampedFraction(block: HTMLElement, element: HTMLElement, total: number): number {
+  const probe = block.ownerDocument.createRange();
+  probe.setStart(block, 0);
+  probe.setEndBefore(element);
+  return Math.min(1, Math.max(0, probe.toString().length / total));
+}
+
+function footnoteNode(root: HTMLElement, href: string | null): HTMLElement | null {
+  const id = footnoteId(href);
+  if (!id) return null;
+  return root.querySelector<HTMLElement>(`[id="${attrValue(id)}"]`);
+}
+
+function footnoteId(href: string | null): string | null {
+  if (href == null) return null;
+  return href.slice(1);
+}
+
+function attrValue(value: string): string {
+  return value.replace(/["\\]/g, "\\$&");
+}
+
+function scrollPaneTo(root: HTMLElement, target: HTMLElement): void {
+  const pane = scrollParent(root);
+  const top = pane.getBoundingClientRect().top;
+  const spot = target.getBoundingClientRect().top;
+  pane.scrollTop = scrollToSpot(pane.scrollTop, top, spot, PREVIEW_SCROLL_PADDING);
+}
+
+function scrollParent(root: HTMLElement): HTMLElement {
+  if (canScroll(root)) return root;
+  return parentScroller(root);
+}
+
+function parentScroller(root: HTMLElement): HTMLElement {
+  const parent = root.parentElement;
+  if (!(parent instanceof HTMLElement)) return root;
+  return scrollParent(parent);
+}
+
+function canScroll(element: HTMLElement): boolean {
+  return overflowScrolls(element) && element.scrollHeight > element.clientHeight;
+}
+
+function overflowScrolls(element: HTMLElement): boolean {
+  const overflow = getComputedStyle(element).overflowY;
+  return overflow === "auto" || overflow === "scroll";
+}
+
 previewEl.addEventListener("click", (event) => {
   if (!editing()) return;
+  if (followFootnote(previewEl, event)) return;
   event.preventDefault();
   placeCursor(clickOffset(previewEl, event, editor.state.doc.toString()));
 });
 readingEl.addEventListener("click", (event) => {
   if (!book) return;
+  if (followFootnote(readingEl, event)) return;
   const element = elementAt(event.target);
   const section = element?.closest<HTMLElement>("section[data-id]");
   if (!section || !readingEl.contains(section)) return;
@@ -1478,8 +2558,16 @@ readingEl.addEventListener("click", (event) => {
 });
 
 async function openAt(id: string, prose: boolean, offset: number): Promise<void> {
-  if (selectedId !== id || prose !== editingProse || !editing()) await choose(id, prose);
+  if (needsChoose(id, prose)) await choose(id, prose);
   placeCursor(offset);
+}
+
+function needsChoose(id: string, prose: boolean): boolean {
+  return selectedId !== id || proseDiffers(prose);
+}
+
+function proseDiffers(prose: boolean): boolean {
+  return prose !== editingProse || !editing();
 }
 editProse.addEventListener("click", () => {
   if (selectedId) void choose(selectedId, true);

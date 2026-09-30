@@ -76,6 +76,15 @@ describe("markup commands", () => {
     const coded = applyCommand("code-block", "int x;", 0, 6, "java");
     expect(coded.text).toBe("\n```java\nint x;\n```\n\n");
     expect(coded.text[coded.head - 1]).toBe(";");
+
+    const afterWord = applyCommand("code-block", "See this", 4, 8, "");
+    expect(afterWord.text).toBe("See \n\n```\nthis\n```\n\n");
+
+    const afterLine = applyCommand("code-block", "See\nint x;", 4, 10, "java");
+    expect(afterLine.text).toBe("See\n\n```java\nint x;\n```\n\n");
+
+    const afterBlank = applyCommand("code-block", "See\n\nint x;", 5, 11, "java");
+    expect(afterBlank.text).toBe("See\n\n```java\nint x;\n```\n\n");
   });
 
   it("adds the next footnote without renumbering the ones already there", () => {

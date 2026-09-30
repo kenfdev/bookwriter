@@ -79,6 +79,9 @@ describe("pictures", () => {
   it("counts a picture path from the book, including one written with a leading slash", () => {
     expect(relativeToBook("/books/novel", "/books/novel/images/bridge.jpg")).toBe("images/bridge.jpg");
     expect(relativeToBook("/books/novel", "/tmp/bridge.jpg")).toBeNull();
+    expect(relativeToBook("/", "/images/bridge.jpg")).toBe("images/bridge.jpg");
+    expect(relativeToBook("/", "images/bridge.jpg")).toBeNull();
+    expect(relativeToBook("/", "/")).toBeNull();
 
     const html = renderSection(section("![Bridge](images/bridge.jpg)\n"), []).html;
     const shown = resolvePictureSources(html, (relative) => `book:///${relative}`);

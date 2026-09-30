@@ -239,6 +239,61 @@ function readBreak(raw: string | undefined, warnings: string[]): boolean | undef
   return undefined;
 }
 
+function readHeaderLine(line: string, fields: Map<string, string>, warnings: string[]): void {
+  if (!line.trim()) return;
+  const split = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
+  if (!split) {
+    warnings.push(`Ignored header line "${line}".`);
+    return;
+  }
+  fields.set(split[1], parseScalar(split[2]));
+}
+
+function headerFields(block: string, warnings: string[]): Map<string, string> {
+  const fields = new Map<string, string>();
+  for (const line of block.split("\n")) readHeaderLine(line, fields, warnings);
+  return fields;
+}
+
+function warnMissingKeys(fields: Map<string, string>, warnings: string[]): void {
+  for (const key of HEADER_KEYS) {
+    if (!fields.has(key)) warnings.push(`Header is missing ${key}.`);
+  }
+}
+
+function readStatus(raw: string | undefined, warnings: string[]): Status {
+  const status = (raw ?? "idea") as Status;
+  if (STATUSES.includes(status)) return status;
+  warnings.push(`Status "${status}" is not one of ${STATUSES.join(", ")}.`);
+  return "idea";
+}
+
+function readRole(raw: string | undefined, warnings: string[]): Role {
+  const role = (raw ?? "body") as Role;
+  if (role === "front" || role === "body") return role;
+  warnings.push(`Role "${role}" is not front or body.`);
+  return "body";
+}
+
+function headerFromFields(fields: Map<string, string>, warnings: string[]): Header {
+  warnMissingKeys(fields, warnings);
+  const unit = readUnit(fields.has("unit") ? fields.get("unit") : undefined, warnings);
+  const pageBreak = readBreak(fields.has("break") ? fields.get("break") : undefined, warnings);
+  return {
+    id: fields.get("id") || "section",
+    title: fields.get("title") ?? "",
+    synopsis: fields.get("synopsis") ?? "",
+    status: readStatus(fields.get("status"), warnings),
+    role: readRole(fields.get("role"), warnings),
+    ...(unit === undefined ? {} : { unit }),
+    ...(pageBreak === undefined ? {} : { break: pageBreak }),
+  };
+}
+
+function sectionFromHeader(block: string, body: string, warnings: string[]): ParsedSection {
+  return { header: headerFromFields(headerFields(block, warnings), warnings), body, warnings };
+}
+
 export function parseSection(text: string): ParsedSection {
   const warnings: string[] = [];
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -247,44 +302,7 @@ export function parseSection(text: string): ParsedSection {
     warnings.push("Missing header. The file was read as a body.");
     return { header: defaultHeader({ title: "Untitled" }), body: normalized, warnings };
   }
-  const fields = new Map<string, string>();
-  for (const line of matched[1].split("\n")) {
-    if (!line.trim()) continue;
-    const split = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
-    if (!split) {
-      warnings.push(`Ignored header line "${line}".`);
-      continue;
-    }
-    fields.set(split[1], parseScalar(split[2]));
-  }
-  for (const key of HEADER_KEYS) {
-    if (!fields.has(key)) warnings.push(`Header is missing ${key}.`);
-  }
-  let status = (fields.get("status") ?? "idea") as Status;
-  if (!STATUSES.includes(status)) {
-    warnings.push(`Status "${status}" is not one of ${STATUSES.join(", ")}.`);
-    status = "idea";
-  }
-  let role = (fields.get("role") ?? "body") as Role;
-  if (role !== "front" && role !== "body") {
-    warnings.push(`Role "${role}" is not front or body.`);
-    role = "body";
-  }
-  const unit = readUnit(fields.has("unit") ? fields.get("unit") : undefined, warnings);
-  const pageBreak = readBreak(fields.has("break") ? fields.get("break") : undefined, warnings);
-  return {
-    header: {
-      id: fields.get("id") || "section",
-      title: fields.get("title") ?? "",
-      synopsis: fields.get("synopsis") ?? "",
-      status,
-      role,
-      ...(unit === undefined ? {} : { unit }),
-      ...(pageBreak === undefined ? {} : { break: pageBreak }),
-    },
-    body: matched[2],
-    warnings,
-  };
+  return sectionFromHeader(matched[1], matched[2], warnings);
 }
 
 export function serializeTitle(title: string): string {

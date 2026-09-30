@@ -246,37 +246,79 @@ function contains(node: TreeNode, id: string): boolean {
 
 export type SiblingPlan = { parentId: string | null; order: string[] };
 
-/** Sibling orders after a drag. Empty when the drop would put a group inside itself. */
-export function planMove(roots: TreeNode[], movingId: string, targetId: string, zone: DropZone): SiblingPlan[] {
+function rejectedMove(moving: Located | null, target: Located | null, movingId: string, targetId: string): boolean {
+  if (!moving || !target) return true;
+  return movingId === targetId || isTrash(moving.node);
+}
+
+function dropsInside(target: Located, zone: DropZone): boolean {
+  if (isTrash(target.node)) return true;
+  return zone === "inside" && target.node.kind === "group";
+}
+
+function parentForDrop(target: Located, zone: DropZone): TreeNode | null {
+  if (dropsInside(target, zone)) return target.node;
+  return target.parent;
+}
+
+function dropInsideSelf(moving: Located, newParent: TreeNode | null): boolean {
+  if (!newParent) return false;
+  const movingId = moving.node.header.id;
+  return newParent.header.id === movingId || contains(moving.node, newParent.header.id);
+}
+
+function pooled(roots: TreeNode[], newParent: TreeNode | null): TreeNode[] {
+  if (newParent) return newParent.children;
+  return roots.filter((node) => !isTrash(node));
+}
+
+function insertionIndex(destination: TreeNode[], targetId: string, zone: DropZone): number {
+  let index = destination.findIndex((node) => node.header.id === targetId);
+  if (index < 0) index = destination.length;
+  if (zone === "after") index += 1;
+  return index;
+}
+
+function placeInDestination(destination: TreeNode[], moving: Located, targetId: string, zone: DropZone, inside: boolean): void {
+  if (inside) {
+    destination.push(moving.node);
+    return;
+  }
+  destination.splice(insertionIndex(destination, targetId, zone), 0, moving.node);
+}
+
+function orderOf(nodes: TreeNode[]): string[] {
+  return nodes.map((node) => node.header.id);
+}
+
+function siblingPlans(moving: Located, newParent: TreeNode | null, destination: TreeNode[]): SiblingPlan[] {
+  const dest = { parentId: newParent?.header.id ?? null, order: orderOf(destination) };
+  if ((moving.parent?.header.id ?? null) === (newParent?.header.id ?? null)) return [dest];
+  const movingId = moving.node.header.id;
+  const source = moving.siblings.filter((node) => node.header.id !== movingId && !isTrash(node));
+  return [{ parentId: moving.parent?.header.id ?? null, order: orderOf(source) }, dest];
+}
+
+function locatePair(roots: TreeNode[], movingId: string, targetId: string): { moving: Located; target: Located } | null {
   const moving = locate(roots, movingId);
   const target = locate(roots, targetId);
-  if (!moving || !target || movingId === targetId || isTrash(moving.node)) return [];
+  if (rejectedMove(moving, target, movingId, targetId)) return null;
+  return { moving: moving as Located, target: target as Located };
+}
 
-  const intoTrash = isTrash(target.node);
-  const insideGroup = intoTrash || (zone === "inside" && target.node.kind === "group");
-  const newParent = insideGroup ? target.node : target.parent;
-  if (newParent && (newParent.header.id === movingId || contains(moving.node, newParent.header.id))) return [];
+function buildPlans(roots: TreeNode[], moving: Located, target: Located, zone: DropZone): SiblingPlan[] {
+  const newParent = parentForDrop(target, zone);
+  if (dropInsideSelf(moving, newParent)) return [];
+  const destination = pooled(roots, newParent).filter((node) => node.header.id !== moving.node.header.id);
+  placeInDestination(destination, moving, target.node.header.id, zone, newParent === target.node);
+  return siblingPlans(moving, newParent, destination);
+}
 
-  const sameParent = (moving.parent?.header.id ?? null) === (newParent?.header.id ?? null);
-  const pool = newParent ? newParent.children : roots.filter((node) => !isTrash(node));
-  const destination = pool.filter((node) => node.header.id !== movingId);
-  if (insideGroup) {
-    destination.push(moving.node);
-  } else {
-    let index = destination.findIndex((node) => node.header.id === targetId);
-    if (index < 0) index = destination.length;
-    if (zone === "after") index += 1;
-    destination.splice(index, 0, moving.node);
-  }
-
-  if (sameParent) {
-    return [{ parentId: newParent?.header.id ?? null, order: destination.map((node) => node.header.id) }];
-  }
-  const source = moving.siblings.filter((node) => node.header.id !== movingId && !isTrash(node));
-  return [
-    { parentId: moving.parent?.header.id ?? null, order: source.map((node) => node.header.id) },
-    { parentId: newParent?.header.id ?? null, order: destination.map((node) => node.header.id) },
-  ];
+/** Sibling orders after a drag. Empty when the drop would put a group inside itself. */
+export function planMove(roots: TreeNode[], movingId: string, targetId: string, zone: DropZone): SiblingPlan[] {
+  const pair = locatePair(roots, movingId, targetId);
+  if (!pair) return [];
+  return buildPlans(roots, pair.moving, pair.target, zone);
 }
 
 async function twoPhaseRename(fs: Fs, renames: { from: string; to: string }[]): Promise<void> {

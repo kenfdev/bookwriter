@@ -48,6 +48,30 @@ describe("preview", () => {
     expect(rendered.warnings.some((warning) => warning.includes("Unclosed"))).toBe(true);
   });
 
+  it("points a footnote marker at the note in that same section", () => {
+    const here = section("See.[^1]\n\n[^1]: Here.\n");
+    const there = section("Also.[^1]\n\n[^1]: There.\n");
+    there.header = { ...there.header, id: "outward", title: "Outward" };
+    const one = renderSection(here, []);
+    expect(one.html).toContain('href="#fn-inward-1"');
+    expect(one.html).toContain('id="fn-inward-1"');
+    expect(one.html).toContain('id="fnref-inward-1"');
+    expect(one.html).toContain('href="#fnref-inward-1"');
+    expect(one.html).toContain('data-line="0"');
+    expect(one.html).toMatch(/data-line="2"[^>]*>Here\./);
+    const both = renderBook([here, there]);
+    expect(both.html).toContain('id="fn-inward-1"');
+    expect(both.html).toContain('id="fn-outward-1"');
+    expect(both.html).not.toContain('href="#fn1"');
+  });
+
+  it("turns an inline note into a footnote and keeps one written in code", () => {
+    const rendered = renderSection(section("See ^[the bridge] and `^[not a note]`.\n[^1]: Kept.\n"), []);
+    expect(rendered.html).toContain("the bridge");
+    expect(rendered.html).toContain("not a note");
+    expect(rendered.warnings).toEqual([]);
+  });
+
   it("does not treat a footnote mentioned in code as a missing note", () => {
     const rendered = renderSection(
       section("A footnote is `[^1]`, and the command inserts `[^n]`.\n"),

@@ -1,0 +1,10 @@
+Usage:
+  bw <directory>
+  bw --help
+
+Build Bookwriter and open the book in <directory>.
+The directory must already exist. A folder with no manuscript yet becomes an empty book.
+
+bookwriter <directory> opens that book without rebuilding.
+bookwriter --help prints this usage.
+With no directory, bookwriter opens spec-book/.

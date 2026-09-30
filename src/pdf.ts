@@ -94,6 +94,13 @@ const BOX_VERTICAL = new Set([0x2502, 0x2503, 0x2506, 0x2507, 0x250a, 0x250b, 0x
 const BOX_FORK = new Set([0x251c, 0x2523, 0x2560]);
 const BOX_ELBOW = new Set([0x2514, 0x2517, 0x255a]);
 
+function boxDiagonal(cp: number): number | undefined {
+  if (cp === 0x2571) return 0x2f;
+  if (cp === 0x2572) return 0x5c;
+  if (cp === 0x2573) return 0x78;
+  return undefined;
+}
+
 /**
  * One ASCII column for a box-drawing character. The standard fonts have no such glyphs.
  * ├── is drawn as |-- and └── as `--, and a run of ─ is a run of hyphens.
@@ -103,20 +110,21 @@ function boxAscii(cp: number): number | undefined {
   if (BOX_HORIZONTAL.has(cp)) return 0x2d;
   if (BOX_VERTICAL.has(cp) || BOX_FORK.has(cp)) return 0x7c;
   if (BOX_ELBOW.has(cp)) return 0x60;
-  if (cp === 0x2571) return 0x2f;
-  if (cp === 0x2572) return 0x5c;
-  if (cp === 0x2573) return 0x78;
-  return 0x2b;
+  return boxDiagonal(cp) ?? 0x2b;
 }
 
-/** WinAnsi byte for one character, or null when the standard fonts cannot show it as itself. */
-function winAnsiByte(cp: number): number | null {
-  const drawn = boxAscii(cp);
-  if (drawn !== undefined) return drawn;
+function markByte(cp: number): number | undefined {
   if (cp === 0x276f) return 0x9b; // ❯ the prompt angle, drawn as ›
   if (cp === 0x23fa) return 0x95; // ⏺ the reply mark, drawn as •
   if (cp === 0x23bf) return 0x60; // ⎿ the result elbow, drawn as `
   if (cp === 0x2212) return 0x2d; // − minus sign, drawn as -
+  return undefined;
+}
+
+/** WinAnsi byte for one character, or null when the standard fonts cannot show it as itself. */
+function winAnsiByte(cp: number): number | null {
+  const drawn = boxAscii(cp) ?? markByte(cp);
+  if (drawn !== undefined) return drawn;
   if (cp === 9) return 32;
   if (cp >= 32 && cp <= 126) return cp;
   if (cp >= 160 && cp <= 255) return cp;
@@ -234,94 +242,147 @@ function glyphs(text: string, font: FontKey): Glyph[] {
 
 type Token = { space: Piece } | { word: Piece[] };
 
+function finishWord(line: Token[], word: Piece[]): Piece[] {
+  if (word.length) line.push({ word });
+  return [];
+}
+
+function breakSpace(glyph: Glyph, run: Run): boolean {
+  return glyph.code === 32 && !run.nobreak && glyph.rise === undefined && glyph.font === run.font;
+}
+
+function addSpace(tokens: Token[], font: FontKey): void {
+  const last = tokens[tokens.length - 1];
+  if (tokens.length > 0 && !(last && "space" in last)) tokens.push({ space: { codes: [32], font } });
+}
+
+function samePiece(tail: Piece, glyph: Glyph): boolean {
+  return tail.font === glyph.font && tail.rise === glyph.rise && tail.scale === glyph.scale;
+}
+
+function addGlyph(word: Piece[], glyph: Glyph): void {
+  const tail = word[word.length - 1];
+  if (tail && samePiece(tail, glyph)) tail.codes.push(glyph.code);
+  else word.push({ codes: [glyph.code], font: glyph.font, rise: glyph.rise, scale: glyph.scale });
+}
+
+function takeGlyph(lines: Token[][], word: Piece[], glyph: Glyph, run: Run): Piece[] {
+  if (!breakSpace(glyph, run)) {
+    addGlyph(word, glyph);
+    return word;
+  }
+  const next = finishWord(lines[lines.length - 1], word);
+  addSpace(lines[lines.length - 1], run.font);
+  return next;
+}
+
+function takePart(lines: Token[][], word: Piece[], part: string, run: Run, broken: boolean): Piece[] {
+  if (broken) {
+    word = finishWord(lines[lines.length - 1], word);
+    lines.push([]);
+  }
+  for (const glyph of glyphs(part, run.font)) word = takeGlyph(lines, word, glyph, run);
+  return word;
+}
+
+function tokenizeRun(lines: Token[][], word: Piece[], run: Run): Piece[] {
+  const parts = run.text.split("\n");
+  for (let index = 0; index < parts.length; index++) word = takePart(lines, word, parts[index], run, index > 0);
+  return word;
+}
+
+function trimLineSpaces(lines: Token[][]): void {
+  for (const tokens of lines) {
+    while (tokens.length && "space" in tokens[tokens.length - 1]) tokens.pop();
+  }
+}
+
 /** Cut runs into words and the spaces between them, one list per hard line break. */
 function tokenize(runs: Run[]): Token[][] {
   const lines: Token[][] = [[]];
   let word: Piece[] = [];
-  const line = () => lines[lines.length - 1];
-  const endWord = () => {
-    if (word.length) line().push({ word });
-    word = [];
-  };
-  for (const run of runs) {
-    const parts = run.text.split("\n");
-    parts.forEach((part, index) => {
-      if (index > 0) {
-        endWord();
-        lines.push([]);
-      }
-      for (const glyph of glyphs(part, run.font)) {
-        if (glyph.code === 32 && !run.nobreak && glyph.rise === undefined && glyph.font === run.font) {
-          endWord();
-          const tokens = line();
-          const last = tokens[tokens.length - 1];
-          if (tokens.length > 0 && !(last && "space" in last)) tokens.push({ space: { codes: [32], font: run.font } });
-        } else {
-          const tail = word[word.length - 1];
-          if (tail && tail.font === glyph.font && tail.rise === glyph.rise && tail.scale === glyph.scale) {
-            tail.codes.push(glyph.code);
-          } else word.push({ codes: [glyph.code], font: glyph.font, rise: glyph.rise, scale: glyph.scale });
-        }
-      }
-    });
-  }
-  endWord();
-  for (const tokens of lines) {
-    while (tokens.length && "space" in tokens[tokens.length - 1]) tokens.pop();
-  }
+  for (const run of runs) word = tokenizeRun(lines, word, run);
+  finishWord(lines[lines.length - 1], word);
+  trimLineSpaces(lines);
   return lines;
+}
+
+type LineBuf = { pieces: Piece[]; width: number };
+
+function blankLine(): LineBuf {
+  return { pieces: [], width: 0 };
+}
+
+function appendWord(line: LineBuf, word: Piece[]): void {
+  for (const piece of word) append(line.pieces, piece);
+}
+
+// A word wider than a whole line: cut it wherever it reaches the edge.
+function cutLongWord(word: Piece[], size: number, width: number): Piece[][] {
+  const lines: Piece[][] = [];
+  let pieces: Piece[] = [];
+  let used = 0;
+  for (const piece of word) {
+    for (const code of piece.codes) {
+      const w = textWidth([code], piece.font, size * (piece.scale ?? 1));
+      if (used + w > width && used > 0) {
+        lines.push(pieces);
+        pieces = [];
+        used = 0;
+      }
+      append(pieces, { codes: [code], font: piece.font, rise: piece.rise, scale: piece.scale });
+      used += w;
+    }
+  }
+  lines.push(pieces);
+  return lines;
+}
+
+function placeFitted(out: Piece[][], word: Piece[], size: number, width: number): LineBuf {
+  if (linePieceWidth(word, size) <= width) {
+    const line = blankLine();
+    appendWord(line, word);
+    line.width = linePieceWidth(word, size);
+    return line;
+  }
+  const parts = cutLongWord(word, size, width);
+  const last = parts.pop() ?? [];
+  out.push(...parts);
+  return { pieces: last, width: linePieceWidth(last, size) };
+}
+
+function putWord(out: Piece[][], line: LineBuf, gap: Piece | null, word: Piece[], size: number, width: number): LineBuf {
+  const wordWidth = linePieceWidth(word, size);
+  const spacing = gap ? pieceWidth(gap, size) : 0;
+  if (line.pieces.length > 0 && line.width + spacing + wordWidth <= width) {
+    if (gap) append(line.pieces, gap);
+    appendWord(line, word);
+    line.width += spacing + wordWidth;
+    return line;
+  }
+  if (line.pieces.length > 0) out.push(line.pieces);
+  return placeFitted(out, word, size, width);
+}
+
+function wrapTokens(tokens: Token[], size: number, width: number): Piece[][] {
+  const out: Piece[][] = [];
+  let line = blankLine();
+  let gap: Piece | null = null;
+  for (const token of tokens) {
+    if ("space" in token) gap = token.space;
+    else {
+      line = putWord(out, line, gap, token.word, size, width);
+      gap = null;
+    }
+  }
+  out.push(line.pieces);
+  return out;
 }
 
 /** Break runs into lines no wider than `width`. Over-long words are split. */
 function wrapRuns(runs: Run[], size: number, width: number): Piece[][] {
   const out: Piece[][] = [];
-  for (const tokens of tokenize(runs)) {
-    let current: Piece[] = [];
-    let currentWidth = 0;
-    let gap: Piece | null = null;
-    const flush = () => {
-      out.push(current);
-      current = [];
-      currentWidth = 0;
-    };
-    const placeLong = (word: Piece[]) => {
-      // A word wider than a whole line: cut it wherever it reaches the edge.
-      for (const piece of word) {
-        for (const code of piece.codes) {
-          const w = textWidth([code], piece.font, size * (piece.scale ?? 1));
-          if (currentWidth + w > width && currentWidth > 0) flush();
-          append(current, { codes: [code], font: piece.font, rise: piece.rise, scale: piece.scale });
-          currentWidth += w;
-        }
-      }
-    };
-    for (const token of tokens) {
-      if ("space" in token) {
-        gap = token.space;
-        continue;
-      }
-      const wordWidth = linePieceWidth(token.word, size);
-      const gapWidth = gap ? pieceWidth(gap, size) : 0;
-      if (current.length === 0) {
-        if (wordWidth <= width) {
-          for (const piece of token.word) append(current, piece);
-          currentWidth = wordWidth;
-        } else placeLong(token.word);
-      } else if (currentWidth + gapWidth + wordWidth <= width) {
-        if (gap) append(current, gap);
-        for (const piece of token.word) append(current, piece);
-        currentWidth += gapWidth + wordWidth;
-      } else {
-        flush();
-        if (wordWidth <= width) {
-          for (const piece of token.word) append(current, piece);
-          currentWidth = wordWidth;
-        } else placeLong(token.word);
-      }
-      gap = null;
-    }
-    flush();
-  }
+  for (const tokens of tokenize(runs)) out.push(...wrapTokens(tokens, size, width));
   return out;
 }
 
@@ -350,6 +411,100 @@ const CODE_RULE = 2;
 
 /** A run of blocks that must not be left behind when the next block starts a new page. */
 type Hold = { index: number; cursor: number; yAfter: number };
+
+function runsOf(content: string | Run[], font: FontKey): Run[] {
+  return typeof content === "string" ? [{ text: content, font }] : content;
+}
+
+function spaceBefore(before: number | undefined, occupied: boolean): number {
+  return before && occupied ? before : 0;
+}
+
+function textX(center: boolean | undefined, indent: number, pieces: Piece[], size: number): number {
+  if (!center) return MARGIN + indent;
+  return MARGIN + indent + (TEXT_WIDTH - indent - linePieceWidth(pieces, size)) / 2;
+}
+
+function paintTextLine(page: Item[], pieces: Piece[], options: TextOptions, indent: number, index: number, y: number): void {
+  if (index === 0 && options.bullet) {
+    const bullet: Piece = { codes: encode(options.bullet), font: options.font };
+    page.push({ kind: "text", pieces: [bullet], size: options.size, x: MARGIN + indent - 14, y });
+  }
+  page.push({ kind: "text", pieces, size: options.size, x: textX(options.center, indent, pieces, options.size), y });
+}
+
+function nextHold(
+  hold: Hold | null,
+  keepWithNext: number | undefined,
+  moved: boolean,
+  origin: number,
+  cursor: number,
+  yAfter: number,
+): Hold | null {
+  if (!(keepWithNext && !moved)) return null;
+  if (hold && hold.index <= origin) {
+    hold.yAfter = yAfter;
+    return hold;
+  }
+  return { index: origin, cursor, yAfter };
+}
+
+type CodeRow = { codes: number[]; more: boolean };
+
+function codeColumns(boxWidth: number): number {
+  return Math.max(8, Math.floor((boxWidth - CODE_RULE - 2 * CODE_PAD - 6) / (0.6 * CODE_SIZE)));
+}
+
+function codeRows(source: string, columns: number): CodeRow[] {
+  const rows: CodeRow[] = [];
+  for (const line of source.split("\n")) {
+    const codes = encode(expandTabs(line));
+    if (codes.length === 0) rows.push({ codes, more: false });
+    for (let at = 0; at < codes.length; at += columns) {
+      rows.push({ codes: codes.slice(at, at + columns), more: at + columns < codes.length });
+    }
+  }
+  return rows;
+}
+
+// No lone first or last line of a block on a page of its own.
+function avoidCodeWidow(take: number, remaining: number): number {
+  if (take < remaining && remaining - take === 1 && take > 2) return take - 1;
+  return take;
+}
+
+function codeSlice(take: number, remaining: number, pageEmpty: boolean): number | null {
+  if (!(take < Math.min(2, remaining))) return take;
+  return pageEmpty ? 1 : null;
+}
+
+function paintCodeRow(page: Item[], row: CodeRow, boxX: number, boxWidth: number, baseline: number): void {
+  const x = boxX + CODE_RULE + CODE_PAD;
+  if (row.codes.length > 0) {
+    page.push({ kind: "text", pieces: [{ codes: row.codes, font: "F3" }], size: CODE_SIZE, x, y: baseline });
+  }
+  if (row.more) {
+    page.push({
+      kind: "text",
+      pieces: [{ codes: [0xbb], font: "F3" }],
+      size: CODE_SIZE,
+      x: boxX + boxWidth - CODE_PAD - 4,
+      y: baseline,
+      gray: 0.45,
+    });
+  }
+}
+
+function paintCodeSlice(page: Item[], rows: CodeRow[], done: number, take: number, boxX: number, boxWidth: number, top: number): number {
+  const height = take * CODE_LEADING + 2 * CODE_PAD;
+  page.push({ kind: "rect", x: boxX, y: top - height, w: boxWidth, h: height, gray: 0.95 });
+  page.push({ kind: "rect", x: boxX, y: top - height, w: CODE_RULE, h: height, gray: 0.7 });
+  for (let k = 0; k < take; k++) {
+    const baseline = top - CODE_PAD - (k + 1) * CODE_LEADING + 3;
+    paintCodeRow(page, rows[done + k], boxX, boxWidth, baseline);
+  }
+  return top - height;
+}
 
 class Layout {
   pages: Item[][] = [[]];
@@ -406,34 +561,23 @@ class Layout {
   text(content: string | Run[], options: TextOptions): void {
     const indent = options.indent ?? 0;
     const leading = options.leading ?? options.size * 1.35;
-    const runs = typeof content === "string" ? [{ text: content, font: options.font }] : content;
-    const lines = wrapRuns(runs, options.size, TEXT_WIDTH - indent);
-    const gap = options.before && this.page.length > 0 ? options.before : 0;
+    const lines = wrapRuns(runsOf(content, options.font), options.size, TEXT_WIDTH - indent);
+    const gap = spaceBefore(options.before, this.page.length > 0);
     this.y -= gap;
     this.need(leading * Math.min(lines.length, 2) + (options.keepWithNext ?? 0), gap);
     const origin = this.page.length;
     const cursor = this.y;
     let moved = false;
-    lines.forEach((pieces, index) => {
+    for (let index = 0; index < lines.length; index++) {
       if (this.y - leading < BOTTOM) {
         this.newPage();
         moved = true;
       }
       this.y -= leading;
-      if (index === 0 && options.bullet) {
-        const bullet: Piece = { codes: encode(options.bullet), font: options.font };
-        this.page.push({ kind: "text", pieces: [bullet], size: options.size, x: MARGIN + indent - 14, y: this.y });
-      }
-      const x = options.center
-        ? MARGIN + indent + (TEXT_WIDTH - indent - linePieceWidth(pieces, options.size)) / 2
-        : MARGIN + indent;
-      this.page.push({ kind: "text", pieces, size: options.size, x, y: this.y });
-    });
+      paintTextLine(this.page, lines[index], options, indent, index, this.y);
+    }
     this.y -= options.after ?? 0;
-    if (options.keepWithNext && !moved) {
-      if (this.hold && this.hold.index <= origin) this.hold.yAfter = this.y;
-      else this.hold = { index: origin, cursor, yAfter: this.y };
-    } else this.hold = null;
+    this.hold = nextHold(this.hold, options.keepWithNext, moved, origin, cursor, this.y);
   }
 
   rule(): void {
@@ -452,54 +596,19 @@ class Layout {
   code(source: string, indent: number): void {
     const boxX = MARGIN + indent;
     const boxWidth = TEXT_WIDTH - indent;
-    const columns = Math.max(8, Math.floor((boxWidth - CODE_RULE - 2 * CODE_PAD - 6) / (0.6 * CODE_SIZE)));
-    const rows: { codes: number[]; more: boolean }[] = [];
-    for (const line of source.split("\n")) {
-      const codes = encode(expandTabs(line));
-      if (codes.length === 0) rows.push({ codes, more: false });
-      for (let at = 0; at < codes.length; at += columns) {
-        rows.push({ codes: codes.slice(at, at + columns), more: at + columns < codes.length });
-      }
-    }
+    const rows = codeRows(source, codeColumns(boxWidth));
     if (this.page.length > 0) this.y -= 2;
     let done = 0;
     while (done < rows.length) {
       const remaining = rows.length - done;
       const room = Math.floor((this.y - BOTTOM - 2 * CODE_PAD) / CODE_LEADING);
-      let take = Math.min(room, remaining);
-      // No lone first or last line of a block on a page of its own.
-      if (take < remaining && remaining - take === 1 && take > 2) take -= 1;
-      if (take < Math.min(2, remaining)) {
-        if (this.page.length === 0) take = 1;
-        else {
-          const fitsWithHeading = done === 0 && this.need(Math.min(2, remaining) * CODE_LEADING + 2 * CODE_PAD, 2);
-          if (!fitsWithHeading) this.newPage();
-          continue;
-        }
+      const take = codeSlice(avoidCodeWidow(Math.min(room, remaining), remaining), remaining, this.page.length === 0);
+      if (take === null) {
+        const fits = done === 0 && this.need(Math.min(2, remaining) * CODE_LEADING + 2 * CODE_PAD, 2);
+        if (!fits) this.newPage();
+        continue;
       }
-      const height = take * CODE_LEADING + 2 * CODE_PAD;
-      const top = this.y;
-      this.page.push({ kind: "rect", x: boxX, y: top - height, w: boxWidth, h: height, gray: 0.95 });
-      this.page.push({ kind: "rect", x: boxX, y: top - height, w: CODE_RULE, h: height, gray: 0.7 });
-      for (let k = 0; k < take; k++) {
-        const row = rows[done + k];
-        const baseline = top - CODE_PAD - (k + 1) * CODE_LEADING + 3;
-        const x = boxX + CODE_RULE + CODE_PAD;
-        if (row.codes.length > 0) {
-          this.page.push({ kind: "text", pieces: [{ codes: row.codes, font: "F3" }], size: CODE_SIZE, x, y: baseline });
-        }
-        if (row.more) {
-          this.page.push({
-            kind: "text",
-            pieces: [{ codes: [0xbb], font: "F3" }],
-            size: CODE_SIZE,
-            x: boxX + boxWidth - CODE_PAD - 4,
-            y: baseline,
-            gray: 0.45,
-          });
-        }
-      }
-      this.y = top - height;
+      this.y = paintCodeSlice(this.page, rows, done, take, boxX, boxWidth, this.y);
       done += take;
       this.hold = null;
       if (done < rows.length) this.newPage();
@@ -572,77 +681,117 @@ function pictureSize(block: string, available: number): { width?: number; height
   return { width: read("width", available), height: read("height", CONTENT_HEIGHT) };
 }
 
+type InlineState = {
+  segments: Segment[];
+  runs: Run[];
+  bold: number;
+  italic: number;
+  skip: number;
+  base: FontKey;
+  available: number;
+};
+
+function inlineFont(state: InlineState): FontKey {
+  return styled(state.base, state.bold > 0, state.italic > 0);
+}
+
+function flushRuns(state: InlineState): void {
+  if (state.runs.length) state.segments.push({ runs: state.runs });
+  state.runs = [];
+}
+
+function takeImage(child: MdToken, next: MdToken | undefined, available: number): { segment: Segment; skip?: number } {
+  let size: { width?: number; height?: number } = {};
+  const block = next?.type === "text" ? /^\{([^{}]*)\}/.exec(next.content) : null;
+  let skip: number | undefined;
+  if (block) {
+    size = pictureSize(block[1], available);
+    skip = block[0].length;
+  }
+  const picture = { src: String(child.attrGet("src") ?? ""), alt: child.content, ...size };
+  return { segment: { picture, alone: false }, skip };
+}
+
+function layoutMark(state: InlineState, child: MdToken): boolean {
+  switch (child.type) {
+    case "strong_open":
+      state.bold += 1;
+      return true;
+    case "strong_close":
+      state.bold -= 1;
+      return true;
+    case "em_open":
+      state.italic += 1;
+      return true;
+    case "em_close":
+      state.italic -= 1;
+      return true;
+    case "softbreak":
+      state.runs.push({ text: " ", font: inlineFont(state) });
+      return true;
+    case "hardbreak":
+      state.runs.push({ text: "\n", font: inlineFont(state) });
+      return true;
+    case "footnote_ref":
+      state.runs.push({ text: `[${Number((child.meta as { id?: number } | null)?.id ?? 0) + 1}]`, font: inlineFont(state) });
+      return true;
+    default:
+      return false;
+  }
+}
+
+function layoutContent(state: InlineState, child: MdToken, next: MdToken | undefined): void {
+  switch (child.type) {
+    case "text": {
+      const text = state.skip ? child.content.slice(state.skip) : child.content;
+      state.skip = 0;
+      if (text) state.runs.push({ text, font: inlineFont(state) });
+      return;
+    }
+    case "code_inline":
+      state.runs.push({ text: child.content, font: "F3", nobreak: child.content.length <= 40 });
+      return;
+    case "image": {
+      flushRuns(state);
+      const taken = takeImage(child, next, state.available);
+      state.skip = taken.skip ?? state.skip;
+      state.segments.push(taken.segment);
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+function segmentBlank(segment: Segment): boolean {
+  return "runs" in segment && segment.runs.every((run) => run.text.trim() === "");
+}
+
+function markLonePicture(segments: Segment[]): void {
+  const meaningful = segments.filter((segment) => !segmentBlank(segment));
+  if (meaningful.length === 1 && "picture" in meaningful[0]) meaningful[0].alone = true;
+}
+
+function visibleSegments(segments: Segment[]): Segment[] {
+  return segments.filter((segment) => !segmentBlank(segment) || "picture" in segment);
+}
+
 /**
  * Split an inline token into text runs and pictures. Code spans keep Courier, and
  * emphasis and strong text switch between the Helvetica faces. Pictures end the text
  * before them; `alone` marks a paragraph that holds nothing else, which gets a caption.
  */
 function inlineSegments(token: MdToken, base: FontKey, available: number): Segment[] {
-  const segments: Segment[] = [];
-  let runs: Run[] = [];
-  let bold = 0;
-  let italic = 0;
-  const font = () => styled(base, bold > 0, italic > 0);
-  const flush = () => {
-    if (runs.length) segments.push({ runs });
-    runs = [];
-  };
+  const state: InlineState = { segments: [], runs: [], bold: 0, italic: 0, skip: 0, base, available };
   const children = token.children ?? [];
-  let skip = 0;
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
-    switch (child.type) {
-      case "text": {
-        const text = skip ? child.content.slice(skip) : child.content;
-        skip = 0;
-        if (text) runs.push({ text, font: font() });
-        break;
-      }
-      case "code_inline":
-        runs.push({ text: child.content, font: "F3", nobreak: child.content.length <= 40 });
-        break;
-      case "strong_open":
-        bold += 1;
-        break;
-      case "strong_close":
-        bold -= 1;
-        break;
-      case "em_open":
-        italic += 1;
-        break;
-      case "em_close":
-        italic -= 1;
-        break;
-      case "softbreak":
-        runs.push({ text: " ", font: font() });
-        break;
-      case "hardbreak":
-        runs.push({ text: "\n", font: font() });
-        break;
-      case "footnote_ref":
-        runs.push({ text: `[${Number((child.meta as { id?: number } | null)?.id ?? 0) + 1}]`, font: font() });
-        break;
-      case "image": {
-        flush();
-        const next = children[i + 1];
-        let size: { width?: number; height?: number } = {};
-        const block = next?.type === "text" ? /^\{([^{}]*)\}/.exec(next.content) : null;
-        if (block) {
-          size = pictureSize(block[1], available);
-          skip = block[0].length;
-        }
-        segments.push({ picture: { src: String(child.attrGet("src") ?? ""), alt: child.content, ...size }, alone: false });
-        break;
-      }
-      default:
-        break;
-    }
+    if (layoutMark(state, child)) continue;
+    layoutContent(state, child, children[i + 1]);
   }
-  flush();
-  const blank = (segment: Segment) => "runs" in segment && segment.runs.every((run) => run.text.trim() === "");
-  const meaningful = segments.filter((segment) => !blank(segment));
-  if (meaningful.length === 1 && "picture" in meaningful[0]) meaningful[0].alone = true;
-  return segments.filter((segment) => !blank(segment) || "picture" in segment);
+  flushRuns(state);
+  markLonePicture(state.segments);
+  return visibleSegments(state.segments);
 }
 
 function plainRuns(segments: Segment[]): Run[] {
@@ -709,175 +858,321 @@ function divisionLine(content: string): string | null {
   return matched?.[1] ?? null;
 }
 
-function layoutTokens(tokens: MdToken[], layout: Layout, warnings: string[], pictures: Pictures | undefined): void {
-  type ListState = { ordered: boolean; count: number };
-  const lists: ListState[] = [];
-  let quote = 0;
-  let pendingBullet: string | null = null;
-  let heading = 0;
-  let chapterLead = false;
-  let inNotes = false;
-  let noteNumber = 0;
-  let row: Run[][] | null = null;
-  let headerRow = false;
-  let noteFirst = false;
-  const warned = new Set<string>();
-  const imageKeys = new Map<string, number>();
+type ListState = { ordered: boolean; count: number };
 
-  const indent = () => lists.length * 22 + quote * 18 + (inNotes ? 14 : 0);
+type LayoutState = {
+  layout: Layout;
+  warnings: string[];
+  pictures: Pictures | undefined;
+  lists: ListState[];
+  quote: number;
+  pendingBullet: string | null;
+  heading: number;
+  chapterLead: boolean;
+  inNotes: boolean;
+  noteNumber: number;
+  row: Run[][] | null;
+  headerRow: boolean;
+  noteFirst: boolean;
+  warned: Set<string>;
+  imageKeys: Map<string, number>;
+};
 
-  const place = (picture: PictureRef, alone: boolean): void => {
-    const known = pictures?.get(picture.src);
-    if (known && "image" in known) {
-      let key = imageKeys.get(picture.src);
-      if (key === undefined) {
-        key = layout.images.length;
-        layout.images.push(known.image);
-        imageKeys.set(picture.src, key);
-      }
-      layout.figure(known.image, key, picture, indent(), alone ? picture.alt : "");
+function layoutIndent(state: LayoutState): number {
+  return state.lists.length * 22 + state.quote * 18 + (state.inNotes ? 14 : 0);
+}
+
+function placeKnownPicture(state: LayoutState, picture: PictureRef, image: PdfImage, alone: boolean): void {
+  let key = state.imageKeys.get(picture.src);
+  if (key === undefined) {
+    key = state.layout.images.length;
+    state.layout.images.push(image);
+    state.imageKeys.set(picture.src, key);
+  }
+  state.layout.figure(image, key, picture, layoutIndent(state), alone ? picture.alt : "");
+}
+
+function warnMissingPicture(state: LayoutState, picture: PictureRef, known: Picture | undefined): void {
+  if (!state.warned.has(picture.src)) {
+    state.warned.add(picture.src);
+    const reason = known && "error" in known ? known.error : "pictures were not loaded";
+    state.warnings.push(`Picture "${picture.src}" is not in the PDF: ${reason}.`);
+  }
+  state.layout.text(`[${picture.alt || "image"}]`, { font: "F4", size: 11, indent: layoutIndent(state), leading: 15, after: 8 });
+}
+
+function placePicture(state: LayoutState, picture: PictureRef, alone: boolean): void {
+  const known = state.pictures?.get(picture.src);
+  if (known && "image" in known) {
+    placeKnownPicture(state, picture, known.image, alone);
+    return;
+  }
+  warnMissingPicture(state, picture, known);
+}
+
+function layoutParagraph(state: LayoutState, runs: Run[]): void {
+  const bullet = state.pendingBullet ?? undefined;
+  state.pendingBullet = null;
+  state.layout.text(runs, {
+    font: "F1",
+    size: 11,
+    indent: layoutIndent(state),
+    leading: 15,
+    after: state.lists.length ? 3 : 8,
+    bullet,
+  });
+}
+
+function openBulletList(state: LayoutState): void {
+  state.lists.push({ ordered: false, count: 0 });
+}
+
+function openOrderedList(state: LayoutState, token: MdToken): void {
+  state.lists.push({ ordered: true, count: Number(token.attrGet("start") ?? 1) - 1 });
+}
+
+function closeList(state: LayoutState): void {
+  state.lists.pop();
+  if (state.lists.length === 0) state.layout.y -= 4;
+}
+
+function openItem(state: LayoutState): void {
+  const list = state.lists[state.lists.length - 1];
+  list.count += 1;
+  state.pendingBullet = list.ordered ? `${list.count}.` : "\u2022";
+}
+
+function openHeading(state: LayoutState, token: MdToken): void {
+  state.heading = Number(token.tag.slice(1));
+}
+
+function closeHeading(state: LayoutState): void {
+  state.heading = 0;
+  state.chapterLead = false;
+}
+
+function openNotes(state: LayoutState): void {
+  state.inNotes = true;
+  state.layout.rule();
+  state.layout.text("Notes", { font: "F2", size: 14, after: 6, keepWithNext: 30 });
+}
+
+function closeNotes(state: LayoutState): void {
+  state.inNotes = false;
+}
+
+function openNote(state: LayoutState, token: MdToken): void {
+  state.noteNumber = Number((token.meta as { id?: number } | null)?.id ?? state.noteNumber - 1) + 1;
+  state.noteFirst = true;
+}
+
+function openRow(state: LayoutState): void {
+  state.row = [];
+}
+
+function openHeader(state: LayoutState): void {
+  state.headerRow = true;
+}
+
+function rowFont(state: LayoutState): FontKey {
+  return state.headerRow ? "F2" : "F1";
+}
+
+function joinRow(row: Run[][], font: FontKey): Run[] {
+  const cells: Run[] = [];
+  for (let index = 0; index < row.length; index++) {
+    if (index > 0) cells.push({ text: "  |  ", font });
+    cells.push(...row[index]);
+  }
+  return cells;
+}
+
+function layoutRow(state: LayoutState): void {
+  const row = state.row;
+  const font = rowFont(state);
+  state.row = null;
+  state.headerRow = false;
+  if (row) state.layout.text(joinRow(row, font), { font, size: 10, indent: layoutIndent(state), after: 2 });
+}
+
+function openPage(layout: Layout, text: string): boolean {
+  if (text !== `<div class="${PAGE_BREAK_CLASS}"></div>`) return false;
+  if (layout.hasContent()) layout.newPage();
+  return true;
+}
+
+function openDivision(state: LayoutState, content: string): boolean {
+  const opener = divisionLine(content);
+  if (!opener) return false;
+  state.layout.text(opener, { font: "F2", size: 13, before: 22, after: 0, center: true, keepWithNext: 48 });
+  state.chapterLead = true;
+  return true;
+}
+
+function warnRawHtml(state: LayoutState): void {
+  if (state.warned.has("html")) return;
+  state.warnings.push("Raw HTML is not shown in the PDF.");
+  state.warned.add("html");
+}
+
+function handledHtml(state: LayoutState, content: string): boolean {
+  return openPage(state.layout, content) || openDivision(state, content);
+}
+
+function layoutHtmlBlock(state: LayoutState, token: MdToken): void {
+  if (handledHtml(state, token.content.trim())) return;
+  warnRawHtml(state);
+}
+
+function layoutCode(state: LayoutState, token: MdToken): void {
+  state.layout.code(token.content.replace(/\n$/, ""), layoutIndent(state));
+}
+
+function layoutTableCell(state: LayoutState, token: MdToken, available: number): void {
+  const font = rowFont(state);
+  state.row!.push(plainRuns(inlineSegments(token, font, available)));
+}
+
+function layoutHeadingText(state: LayoutState, token: MdToken, available: number): void {
+  const clean = plainRuns(inlineSegments(token, "F2", available));
+  const last = clean[clean.length - 1];
+  if (last) last.text = last.text.replace(/\s*\{-\}\s*$/, "");
+  const before = state.chapterLead ? 4 : state.heading <= 2 ? 18 : 12;
+  state.layout.text(clean, { font: "F2", size: HEADING_SIZE[state.heading], before, after: 6, keepWithNext: 40 });
+}
+
+function layoutNoteText(state: LayoutState, token: MdToken, available: number): void {
+  const label = state.noteFirst ? `${state.noteNumber}.` : undefined;
+  state.noteFirst = false;
+  state.layout.text(plainRuns(inlineSegments(token, "F1", available)), {
+    font: "F1",
+    size: 9.5,
+    indent: layoutIndent(state),
+    after: 3,
+    bullet: label,
+  });
+}
+
+function layoutInlineSegment(state: LayoutState, segment: Segment): void {
+  if ("picture" in segment) {
+    placePicture(state, segment.picture, segment.alone);
+    return;
+  }
+  const text = segment.runs.map((run) => run.text).join("").trim();
+  if (openPage(state.layout, text)) return;
+  if (openDivision(state, text)) return;
+  layoutParagraph(state, segment.runs);
+}
+
+function layoutBody(state: LayoutState, token: MdToken, available: number): void {
+  for (const segment of inlineSegments(token, "F1", available)) layoutInlineSegment(state, segment);
+}
+
+function layoutInline(state: LayoutState, token: MdToken): void {
+  const available = TEXT_WIDTH - layoutIndent(state);
+  if (state.row) layoutTableCell(state, token, available);
+  else if (state.heading) layoutHeadingText(state, token, available);
+  else if (state.inNotes) layoutNoteText(state, token, available);
+  else layoutBody(state, token, available);
+}
+
+function layoutStructure(state: LayoutState, token: MdToken): boolean {
+  switch (token.type) {
+    case "bullet_list_open":
+      openBulletList(state);
+      return true;
+    case "ordered_list_open":
+      openOrderedList(state, token);
+      return true;
+    case "bullet_list_close":
+    case "ordered_list_close":
+      closeList(state);
+      return true;
+    case "list_item_open":
+      openItem(state);
+      return true;
+    case "blockquote_open":
+      state.quote += 1;
+      return true;
+    case "blockquote_close":
+      state.quote -= 1;
+      return true;
+    case "heading_open":
+      openHeading(state, token);
+      return true;
+  }
+  return false;
+}
+
+function layoutRegions(state: LayoutState, token: MdToken): boolean {
+  switch (token.type) {
+    case "heading_close":
+      closeHeading(state);
+      return true;
+    case "footnote_block_open":
+      openNotes(state);
+      return true;
+    case "footnote_block_close":
+      closeNotes(state);
+      return true;
+    case "footnote_open":
+      openNote(state, token);
+      return true;
+    case "tr_open":
+      openRow(state);
+      return true;
+    case "th_open":
+      openHeader(state);
+      return true;
+    case "tr_close":
+      layoutRow(state);
+      return true;
+  }
+  return false;
+}
+
+function layoutBlocks(state: LayoutState, token: MdToken): void {
+  switch (token.type) {
+    case "html_block":
+      layoutHtmlBlock(state, token);
       return;
-    }
-    if (!warned.has(picture.src)) {
-      warned.add(picture.src);
-      const reason = known && "error" in known ? known.error : "pictures were not loaded";
-      warnings.push(`Picture "${picture.src}" is not in the PDF: ${reason}.`);
-    }
-    layout.text(`[${picture.alt || "image"}]`, { font: "F4", size: 11, indent: indent(), leading: 15, after: 8 });
-  };
+    case "hr":
+      state.layout.rule();
+      return;
+    case "fence":
+    case "code_block":
+      layoutCode(state, token);
+      return;
+    case "inline":
+      layoutInline(state, token);
+      return;
+    default:
+      return;
+  }
+}
 
-  const paragraph = (runs: Run[]) => {
-    const bullet = pendingBullet ?? undefined;
-    pendingBullet = null;
-    layout.text(runs, { font: "F1", size: 11, indent: indent(), leading: 15, after: lists.length ? 3 : 8, bullet });
+function layoutTokens(tokens: MdToken[], layout: Layout, warnings: string[], pictures: Pictures | undefined): void {
+  const state: LayoutState = {
+    layout,
+    warnings,
+    pictures,
+    lists: [],
+    quote: 0,
+    pendingBullet: null,
+    heading: 0,
+    chapterLead: false,
+    inNotes: false,
+    noteNumber: 0,
+    row: null,
+    headerRow: false,
+    noteFirst: false,
+    warned: new Set<string>(),
+    imageKeys: new Map<string, number>(),
   };
-
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    switch (token.type) {
-      case "heading_open":
-        heading = Number(token.tag.slice(1));
-        break;
-      case "heading_close":
-        heading = 0;
-        chapterLead = false;
-        break;
-      case "html_block": {
-        if (token.content.trim() === `<div class="${PAGE_BREAK_CLASS}"></div>`) {
-          if (layout.hasContent()) layout.newPage();
-          break;
-        }
-        const opener = divisionLine(token.content);
-        if (opener) {
-          layout.text(opener, { font: "F2", size: 13, before: 22, after: 0, center: true, keepWithNext: 48 });
-          chapterLead = true;
-          break;
-        }
-        if (!warned.has("html")) {
-          warned.add("html");
-          warnings.push("Raw HTML is not shown in the PDF.");
-        }
-        break;
-      }
-      case "bullet_list_open":
-        lists.push({ ordered: false, count: 0 });
-        break;
-      case "ordered_list_open":
-        lists.push({ ordered: true, count: Number(token.attrGet("start") ?? 1) - 1 });
-        break;
-      case "bullet_list_close":
-      case "ordered_list_close":
-        lists.pop();
-        if (lists.length === 0) layout.y -= 4;
-        break;
-      case "list_item_open": {
-        const state = lists[lists.length - 1];
-        state.count += 1;
-        pendingBullet = state.ordered ? `${state.count}.` : "\u2022";
-        break;
-      }
-      case "blockquote_open":
-        quote += 1;
-        break;
-      case "blockquote_close":
-        quote -= 1;
-        break;
-      case "footnote_block_open":
-        inNotes = true;
-        layout.rule();
-        layout.text("Notes", { font: "F2", size: 14, after: 6, keepWithNext: 30 });
-        break;
-      case "footnote_block_close":
-        inNotes = false;
-        break;
-      case "footnote_open":
-        noteNumber = Number((token.meta as { id?: number } | null)?.id ?? noteNumber - 1) + 1;
-        noteFirst = true;
-        break;
-      case "tr_open":
-        row = [];
-        break;
-      case "th_open":
-        headerRow = true;
-        break;
-      case "tr_close":
-        if (row) {
-          const cells: Run[] = [];
-          row.forEach((cell, index) => {
-            if (index > 0) cells.push({ text: "  |  ", font: headerRow ? "F2" : "F1" });
-            cells.push(...cell);
-          });
-          layout.text(cells, { font: headerRow ? "F2" : "F1", size: 10, indent: indent(), after: 2 });
-        }
-        row = null;
-        headerRow = false;
-        break;
-      case "hr":
-        layout.rule();
-        break;
-      case "fence":
-      case "code_block":
-        layout.code(token.content.replace(/\n$/, ""), indent());
-        break;
-      case "inline": {
-        const available = TEXT_WIDTH - indent();
-        if (row) {
-          row.push(plainRuns(inlineSegments(token, headerRow ? "F2" : "F1", available)));
-        } else if (heading) {
-          const clean = plainRuns(inlineSegments(token, "F2", available));
-          const last = clean[clean.length - 1];
-          if (last) last.text = last.text.replace(/\s*\{-\}\s*$/, "");
-          const before = chapterLead ? 4 : heading <= 2 ? 18 : 12;
-          layout.text(clean, { font: "F2", size: HEADING_SIZE[heading], before, after: 6, keepWithNext: 40 });
-        } else if (inNotes) {
-          const label = noteFirst ? `${noteNumber}.` : undefined;
-          noteFirst = false;
-          layout.text(plainRuns(inlineSegments(token, "F1", available)), { font: "F1", size: 9.5, indent: indent(), after: 3, bullet: label });
-        } else {
-          for (const segment of inlineSegments(token, "F1", available)) {
-            if ("picture" in segment) {
-              place(segment.picture, segment.alone);
-              continue;
-            }
-            const text = segment.runs.map((run) => run.text).join("").trim();
-            if (text === `<div class="${PAGE_BREAK_CLASS}"></div>`) {
-              if (layout.hasContent()) layout.newPage();
-              continue;
-            }
-            const opener = divisionLine(text);
-            if (opener) {
-              layout.text(opener, { font: "F2", size: 13, before: 22, after: 0, center: true, keepWithNext: 48 });
-              chapterLead = true;
-              continue;
-            }
-            paragraph(segment.runs);
-          }
-        }
-        break;
-      }
-      default:
-        break;
-    }
+  for (const token of tokens) {
+    if (layoutStructure(state, token)) continue;
+    if (layoutRegions(state, token)) continue;
+    layoutBlocks(state, token);
   }
 }
 
@@ -897,91 +1192,120 @@ function imageMatrix(item: ImageItem): string {
   return (m[item.orientation] ?? m[1]).map((n) => String(Math.round(n * 1000) / 1000)).join(" ");
 }
 
-function assemble(layout: Layout, title: string): string {
-  const pageCount = layout.pages.length;
-  const objects: string[] = [];
-  const fontKeys = Object.keys(FONT_NAMES) as FontKey[];
-  const INFO_ID = 3 + fontKeys.length;
-  const FIRST_PAGE = INFO_ID + 1;
-  const firstImage = FIRST_PAGE + pageCount * 2;
-  // Each picture takes one object, or two when it has a soft mask.
+function fontObject(key: FontKey): string {
+  const encoding = key === "F6" ? "" : " /Encoding /WinAnsiEncoding";
+  return `<< /Type /Font /Subtype /Type1 /BaseFont /${FONT_NAMES[key]}${encoding} >>`;
+}
+
+// Each picture takes one object, or two when it has a soft mask.
+function assignImageIds(images: PdfImage[], firstImage: number): { imageIds: number[]; maskIds: (number | null)[] } {
   const imageIds: number[] = [];
   const maskIds: (number | null)[] = [];
   let nextId = firstImage;
-  for (const image of layout.images) {
+  for (const image of images) {
     imageIds.push(nextId++);
     maskIds.push(image.alpha ? nextId++ : null);
   }
+  return { imageIds, maskIds };
+}
 
-  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
-  const kids = layout.pages.map((_, index) => `${FIRST_PAGE + index * 2} 0 R`).join(" ");
-  objects[2] = `<< /Type /Pages /Kids [${kids}] /Count ${pageCount} >>`;
-  fontKeys.forEach((key, index) => {
-    const encoding = key === "F6" ? "" : " /Encoding /WinAnsiEncoding";
-    objects[3 + index] = `<< /Type /Font /Subtype /Type1 /BaseFont /${FONT_NAMES[key]}${encoding} >>`;
-  });
-  objects[INFO_ID] = `<< /Title ${pdfString(encode(title))} /Producer (Bookwriter) >>`;
+function pieceSize(item: TextItem, piece: Piece): string {
+  return piece.scale ? (item.size * piece.scale).toFixed(2) : String(item.size);
+}
 
-  layout.pages.forEach((items, index) => {
-    let content = "";
-    const used = new Set<number>();
-    for (const item of items) {
-      if (item.kind === "rule") {
-        content += `0.6 G 0.5 w ${MARGIN} ${item.y.toFixed(2)} m ${PAGE_WIDTH - MARGIN} ${item.y.toFixed(2)} l S\n`;
-      } else if (item.kind === "rect") {
-        content += `${item.gray} g ${item.x.toFixed(2)} ${item.y.toFixed(2)} ${item.w.toFixed(2)} ${item.h.toFixed(2)} re f\n`;
-      } else if (item.kind === "image") {
-        used.add(item.index);
-        content += `q ${imageMatrix(item)} cm /Im${item.index} Do Q\n`;
-      } else {
-        const visible = item.pieces.filter((piece) => piece.codes.length > 0);
-        if (visible.length === 0) continue;
-        content += `BT ${item.gray === undefined ? "0 g" : `${item.gray} g`} ${item.x.toFixed(2)} ${item.y.toFixed(2)} Td`;
-        for (const piece of visible) {
-          const size = piece.scale ? (item.size * piece.scale).toFixed(2) : String(item.size);
-          content += ` /${piece.font} ${size} Tf`;
-          if (piece.rise) content += ` ${(item.size * piece.rise).toFixed(2)} Ts`;
-          content += ` ${pdfString(piece.codes)} Tj`;
-          if (piece.rise) content += " 0 Ts";
-        }
-        content += " ET\n";
-      }
-    }
-    const label = pdfString(encode(String(index + 1)));
-    const width = textWidth(encode(String(index + 1)), "F1", 9);
-    content += `0 g BT /F1 9 Tf ${((PAGE_WIDTH - width) / 2).toFixed(2)} ${FOOTER_Y} Td ${label} Tj ET\n`;
-    const pageId = FIRST_PAGE + index * 2;
-    const xobjects = used.size
-      ? ` /XObject << ${[...used].map((key) => `/Im${key} ${imageIds[key]} 0 R`).join(" ")} >>`
-      : "";
-    const fonts = fontKeys.map((key, n) => `/${key} ${3 + n} 0 R`).join(" ");
-    objects[pageId] =
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] ` +
-      `/Resources << /Font << ${fonts} >>${xobjects} >> /Contents ${pageId + 1} 0 R >>`;
-    objects[pageId + 1] = `<< /Length ${content.length} >>\nstream\n${content}endstream`;
-  });
+function showPiece(item: TextItem, piece: Piece): string {
+  let out = ` /${piece.font} ${pieceSize(item, piece)} Tf`;
+  if (piece.rise) out += ` ${(item.size * piece.rise).toFixed(2)} Ts`;
+  out += ` ${pdfString(piece.codes)} Tj`;
+  if (piece.rise) out += " 0 Ts";
+  return out;
+}
 
-  layout.images.forEach((image, index) => {
+function showText(item: TextItem): string {
+  const visible = item.pieces.filter((piece) => piece.codes.length > 0);
+  if (visible.length === 0) return "";
+  const gray = item.gray === undefined ? "0 g" : `${item.gray} g`;
+  let out = `BT ${gray} ${item.x.toFixed(2)} ${item.y.toFixed(2)} Td`;
+  for (const piece of visible) out += showPiece(item, piece);
+  return out + " ET\n";
+}
+
+function showItem(item: Item, used: Set<number>): string {
+  if (item.kind === "rule") {
+    return `0.6 G 0.5 w ${MARGIN} ${item.y.toFixed(2)} m ${PAGE_WIDTH - MARGIN} ${item.y.toFixed(2)} l S\n`;
+  }
+  if (item.kind === "rect") {
+    return `${item.gray} g ${item.x.toFixed(2)} ${item.y.toFixed(2)} ${item.w.toFixed(2)} ${item.h.toFixed(2)} re f\n`;
+  }
+  if (item.kind === "image") {
+    used.add(item.index);
+    return `q ${imageMatrix(item)} cm /Im${item.index} Do Q\n`;
+  }
+  return showText(item);
+}
+
+function pageStream(items: Item[], index: number): { body: string; used: Set<number> } {
+  const used = new Set<number>();
+  let body = "";
+  for (const item of items) body += showItem(item, used);
+  const label = pdfString(encode(String(index + 1)));
+  const width = textWidth(encode(String(index + 1)), "F1", 9);
+  body += `0 g BT /F1 9 Tf ${((PAGE_WIDTH - width) / 2).toFixed(2)} ${FOOTER_Y} Td ${label} Tj ET\n`;
+  return { body, used };
+}
+
+function pageResources(fontKeys: FontKey[], used: Set<number>, imageIds: number[]): string {
+  const xobjects = used.size
+    ? ` /XObject << ${[...used].map((key) => `/Im${key} ${imageIds[key]} 0 R`).join(" ")} >>`
+    : "";
+  const fonts = fontKeys.map((key, n) => `/${key} ${3 + n} 0 R`).join(" ");
+  return `/Resources << /Font << ${fonts} >>${xobjects} >>`;
+}
+
+function writePage(objects: string[], items: Item[], index: number, fontKeys: FontKey[], imageIds: number[], firstPage: number): void {
+  const pageId = firstPage + index * 2;
+  const { body, used } = pageStream(items, index);
+  objects[pageId] =
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] ` +
+    `${pageResources(fontKeys, used, imageIds)} /Contents ${pageId + 1} 0 R >>`;
+  objects[pageId + 1] = `<< /Length ${body.length} >>\nstream\n${body}endstream`;
+}
+
+function writePages(objects: string[], pages: Item[][], fontKeys: FontKey[], imageIds: number[], firstPage: number): void {
+  pages.forEach((items, index) => writePage(objects, items, index, fontKeys, imageIds, firstPage));
+}
+
+function imageObject(image: PdfImage, mask: number | null): string {
+  const filters = image.filters.map((name) => `/${name}`).join(" ");
+  const parts = [
+    "/Type /XObject /Subtype /Image",
+    `/Width ${image.width} /Height ${image.height}`,
+    `/ColorSpace ${image.colorSpace} /BitsPerComponent ${image.bpc}`,
+    `/Filter [${filters}]`,
+  ];
+  if (image.extra) parts.push(image.extra);
+  if (mask !== null) parts.push(`/SMask ${mask} 0 R`);
+  parts.push(`/Length ${image.data.length}`);
+  return `<< ${parts.join(" ")} >>\nstream\n${image.data}\nendstream`;
+}
+
+function maskObject(image: PdfImage, alpha: string): string {
+  return (
+    `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
+    `/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter [/ASCII85Decode /FlateDecode] /Length ${alpha.length} >>\n` +
+    `stream\n${alpha}\nendstream`
+  );
+}
+
+function writeImages(objects: string[], images: PdfImage[], imageIds: number[], maskIds: (number | null)[]): void {
+  images.forEach((image, index) => {
     const mask = maskIds[index];
-    const filters = image.filters.map((name) => `/${name}`).join(" ");
-    const parts = [
-      "/Type /XObject /Subtype /Image",
-      `/Width ${image.width} /Height ${image.height}`,
-      `/ColorSpace ${image.colorSpace} /BitsPerComponent ${image.bpc}`,
-      `/Filter [${filters}]`,
-    ];
-    if (image.extra) parts.push(image.extra);
-    if (mask !== null) parts.push(`/SMask ${mask} 0 R`);
-    parts.push(`/Length ${image.data.length}`);
-    objects[imageIds[index]] = `<< ${parts.join(" ")} >>\nstream\n${image.data}\nendstream`;
-    if (mask !== null && image.alpha) {
-      objects[mask] =
-        `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
-        `/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter [/ASCII85Decode /FlateDecode] /Length ${image.alpha.length} >>\n` +
-        `stream\n${image.alpha}\nendstream`;
-    }
+    objects[imageIds[index]] = imageObject(image, mask);
+    if (mask !== null && image.alpha) objects[mask] = maskObject(image, image.alpha);
   });
+}
 
+function writeXref(objects: string[], infoId: number): string {
   let out = "%PDF-1.4\n";
   const offsets: number[] = [];
   for (let id = 1; id < objects.length; id++) {
@@ -991,8 +1315,27 @@ function assemble(layout: Layout, title: string): string {
   const xref = out.length;
   out += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
   for (let id = 1; id < objects.length; id++) out += `${String(offsets[id]).padStart(10, "0")} 00000 n \n`;
-  out += `trailer\n<< /Size ${objects.length} /Root 1 0 R /Info ${INFO_ID} 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  out += `trailer\n<< /Size ${objects.length} /Root 1 0 R /Info ${infoId} 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return out;
+}
+
+function assemble(layout: Layout, title: string): string {
+  const pageCount = layout.pages.length;
+  const objects: string[] = [];
+  const fontKeys = Object.keys(FONT_NAMES) as FontKey[];
+  const infoId = 3 + fontKeys.length;
+  const firstPage = infoId + 1;
+  const { imageIds, maskIds } = assignImageIds(layout.images, firstPage + pageCount * 2);
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  const kids = layout.pages.map((_, index) => `${firstPage + index * 2} 0 R`).join(" ");
+  objects[2] = `<< /Type /Pages /Kids [${kids}] /Count ${pageCount} >>`;
+  fontKeys.forEach((key, index) => {
+    objects[3 + index] = fontObject(key);
+  });
+  objects[infoId] = `<< /Title ${pdfString(encode(title))} /Producer (Bookwriter) >>`;
+  writePages(objects, layout.pages, fontKeys, imageIds, firstPage);
+  writeImages(objects, layout.images, imageIds, maskIds);
+  return writeXref(objects, infoId);
 }
 
 /** Render Markdown to a PDF document held as an ASCII string. Pictures come from `pictures` (see `loadPictures`). */

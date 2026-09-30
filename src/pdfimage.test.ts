@@ -1,6 +1,6 @@
-import { inflateSync } from "node:zlib";
+import { deflateSync, inflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { makeJpeg, makePng, makePngRaw, unascii85 } from "./imageFixtures";
+import { crc32, makeJpeg, makePng, makePngRaw, unascii85 } from "./imageFixtures";
 import { ascii85, encodeImage, parseJpeg, storedZlib } from "./pdfimage";
 
 describe("ascii85", () => {
@@ -50,6 +50,12 @@ describe("jpeg", () => {
 
   it("rejects a truncated file", async () => {
     await expect(encodeImage(makeJpeg(30, 20).subarray(0, 12))).rejects.toThrow("JPEG");
+  });
+
+  it("skips fill bytes and markers that carry no payload", () => {
+    const jpeg = makeJpeg(30, 20, 3, 6);
+    const noisy = Buffer.concat([jpeg.subarray(0, 2), Buffer.from([0x00, 0xff, 0xff, 0xd0, 0xff, 0x01]), jpeg.subarray(2)]);
+    expect(parseJpeg(noisy)).toMatchObject({ width: 30, height: 20, components: 3, orientation: 6 });
   });
 });
 
@@ -117,6 +123,25 @@ describe("png", () => {
     expect(Array.from(inflateSync(unascii85(image.data)))).toEqual([10, 20, 30, 40]);
   });
 
+  it("turns a grey or RGB transparency key into a mask", async () => {
+    const grey = await encodeImage(makePng({ width: 1, height: 1, colorType: 0, rows: [[5]], trns: [0, 5] }));
+    expect(grey.extra).toContain("/Mask [5 5]");
+    expect(grey.alpha).toBeUndefined();
+    const rgb = await encodeImage(makePng({ width: 1, height: 1, colorType: 2, rows: [[9, 8, 7]], trns: [0, 9, 0, 8, 0, 7] }));
+    expect(rgb.extra).toContain("/Mask [9 9 8 8 7 7]");
+  });
+
+  it("undoes Up, Average, and Paeth filters", async () => {
+    // Paeth bytes are chosen so the predictor returns left, above, and above-left.
+    const decoded = async (filtered: number[]) => {
+      const image = await encodeImage(indexedFiltered(2, 2, Buffer.from(filtered)));
+      return Array.from(inflateSync(unascii85(image.data)));
+    };
+    expect(await decoded([2, 10, 20, 2, 20, 20])).toEqual([10, 20, 30, 40]);
+    expect(await decoded([3, 10, 15, 3, 25, 15])).toEqual([10, 20, 30, 40]);
+    expect(await decoded([4, 1, 1, 4, 255, 6])).toEqual([1, 2, 0, 7]);
+  });
+
   it("rejects damaged and unknown files with a reason", async () => {
     const good = makePng({ width: 2, height: 1, colorType: 2, rows: [[1, 2, 3, 4, 5, 6]] });
     await expect(encodeImage(good.subarray(0, 30))).rejects.toThrow("PNG");
@@ -132,3 +157,29 @@ describe("png", () => {
     await expect(encodeImage(Buffer.from("GIF89a....."), { rasterize: async () => null })).rejects.toThrow("only JPEG and PNG");
   });
 });
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const body = Buffer.concat([Buffer.from(type), data]);
+  const out = Buffer.alloc(body.length + 8);
+  out.writeUInt32BE(data.length, 0);
+  body.copy(out, 4);
+  out.writeUInt32BE(crc32(body), body.length + 4);
+  return out;
+}
+
+/** Indexed PNG with a tRNS chunk, so the samples are decoded instead of stored filtered. */
+function indexedFiltered(width: number, height: number, filtered: Buffer): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 3;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", header),
+    pngChunk("PLTE", Buffer.from([0, 0, 0, 255, 255, 255])),
+    pngChunk("tRNS", Buffer.from([255])),
+    pngChunk("IDAT", deflateSync(filtered)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}

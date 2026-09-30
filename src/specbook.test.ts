@@ -14,6 +14,7 @@ describe("the spec as the book", () => {
     const split = splitSpec(spec);
     expect(split.title).toBe("Bookwriter");
     expect(split.intro).toContain("Living spec.");
+    expect(splitSpec("# Book\n\n```\ncode\n```\n").intro).toContain("code");
     expect(split.sections.map((section) => section.title)).toEqual([
       "The book",
       "On disk",

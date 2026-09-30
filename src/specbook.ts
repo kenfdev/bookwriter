@@ -11,11 +11,34 @@ export type SplitSpec = {
   sections: SpecSection[];
 };
 
+function trimEnd(lines: string[]): void {
+  while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+}
+
 function trimBlank(text: string): string {
   const lines = text.split("\n");
   while (lines.length && lines[0].trim() === "") lines.shift();
-  while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+  trimEnd(lines);
   return lines.join("\n");
+}
+
+function isTopHeading(line: string, inFence: boolean, title: string): boolean {
+  return !inFence && !title && /^# /.test(line);
+}
+
+function isSectionHeading(line: string, inFence: boolean): boolean {
+  return !inFence && /^## /.test(line);
+}
+
+function takeFence(fences: Fence[], line: string): void {
+  const mark = fenceMark(line);
+  if (!mark) return;
+  if (mark.info.trim() !== "") {
+    fences.push({ char: mark.char, len: mark.len });
+    return;
+  }
+  if (fences.length) fences.pop();
+  else fences.push({ char: mark.char, len: mark.len });
 }
 
 /**
@@ -31,20 +54,16 @@ export function splitSpec(markdown: string): SplitSpec {
 
   for (const line of lines) {
     const inFence = fences.length > 0;
-    if (!inFence && !title && /^# /.test(line)) {
+    if (isTopHeading(line, inFence, title)) {
       title = line.slice(2).trim();
       continue;
     }
-    if (!inFence && /^## /.test(line)) {
+    if (isSectionHeading(line, inFence)) {
       chunks.push({ title: line.slice(3).trim(), lines: [] });
       continue;
     }
     chunks[chunks.length - 1].lines.push(line);
-    const mark = fenceMark(line);
-    if (!mark) continue;
-    if (mark.info.trim() !== "") fences.push({ char: mark.char, len: mark.len });
-    else if (fences.length) fences.pop();
-    else fences.push({ char: mark.char, len: mark.len });
+    takeFence(fences, line);
   }
 
   return {

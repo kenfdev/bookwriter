@@ -29,43 +29,89 @@ export function offsetFraction(cursor: number, start: number, end: number): numb
   return Math.min(1, Math.max(0, (cursor - start) / span));
 }
 
+type LineBlock = { start: number; end: number };
+
+function finiteSpan(block: LineBlock): number | null {
+  if (!Number.isFinite(block.start) || !Number.isFinite(block.end) || block.end <= block.start) return null;
+  return block.end - block.start;
+}
+
+function coversLine(block: LineBlock, line: number): boolean {
+  return line >= block.start && line < block.end;
+}
+
+function laterStart(blocks: LineBlock[], index: number, best: number): boolean {
+  return blocks[index].start >= blocks[best].start;
+}
+
+function betterSpan(span: number, bestSpan: number, later: boolean): boolean {
+  if (span < bestSpan) return true;
+  return span === bestSpan && later;
+}
+
+function considerCover(blocks: LineBlock[], index: number, line: number, tight: number, tightSpan: number): number {
+  const span = finiteSpan(blocks[index]);
+  if (span === null || !coversLine(blocks[index], line)) return tight;
+  if (tight < 0 || betterSpan(span, tightSpan, laterStart(blocks, index, tight))) return index;
+  return tight;
+}
+
+function tightestCover(blocks: LineBlock[], line: number): number {
+  let tight = -1;
+  let tightSpan = Infinity;
+  for (let index = 0; index < blocks.length; index += 1) {
+    const next = considerCover(blocks, index, line, tight, tightSpan);
+    if (next === tight) continue;
+    tight = next;
+    tightSpan = finiteSpan(blocks[next]) ?? tightSpan;
+  }
+  return tight;
+}
+
+function distanceTo(block: LineBlock, line: number): number {
+  if (line < block.start) return block.start - line;
+  return line - (block.end - 1);
+}
+
+function nearer(dist: number, bestDist: number, later: boolean): boolean {
+  if (dist < bestDist) return true;
+  return dist === bestDist && later;
+}
+
+function considerNearest(blocks: LineBlock[], index: number, line: number, nearest: number, nearestDist: number): number {
+  if (finiteSpan(blocks[index]) === null) return nearest;
+  const dist = distanceTo(blocks[index], line);
+  const later = nearest >= 0 && laterStart(blocks, index, nearest);
+  if (nearest < 0 || nearer(dist, nearestDist, later)) return index;
+  return nearest;
+}
+
+function nearestIndex(blocks: LineBlock[], line: number): number {
+  let nearest = -1;
+  let nearestDist = Infinity;
+  for (let index = 0; index < blocks.length; index += 1) {
+    const next = considerNearest(blocks, index, line, nearest, nearestDist);
+    if (next === nearest) continue;
+    nearest = next;
+    nearestDist = distanceTo(blocks[next], line);
+  }
+  return nearest;
+}
+
+function blockCovering(blocks: LineBlock[], line: number): number {
+  const tight = tightestCover(blocks, line);
+  if (tight >= 0) return tight;
+  return nearestIndex(blocks, line);
+}
+
 /**
  * The block to show for a source line.
  * A line inside several blocks uses the shortest one. A line in a gap uses the nearest,
  * and a tie goes to the later block. Returns -1 when nothing qualifies.
  */
-export function blockAtLine(blocks: Array<{ start: number; end: number }>, line: number): number {
+export function blockAtLine(blocks: LineBlock[], line: number): number {
   if (!Number.isFinite(line)) return -1;
-  let tight = -1;
-  let tightSpan = Infinity;
-  for (let index = 0; index < blocks.length; index += 1) {
-    const start = blocks[index].start;
-    const end = blocks[index].end;
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
-    if (line < start || line >= end) continue;
-    const span = end - start;
-    const later = tight >= 0 && start >= blocks[tight].start;
-    if (span < tightSpan || (span === tightSpan && later)) {
-      tight = index;
-      tightSpan = span;
-    }
-  }
-  if (tight >= 0) return tight;
-
-  let nearest = -1;
-  let nearestDist = Infinity;
-  for (let index = 0; index < blocks.length; index += 1) {
-    const start = blocks[index].start;
-    const end = blocks[index].end;
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
-    const dist = line < start ? start - line : line - (end - 1);
-    const later = nearest >= 0 && start >= blocks[nearest].start;
-    if (dist < nearestDist || (dist === nearestDist && later)) {
-      nearest = index;
-      nearestDist = dist;
-    }
-  }
-  return nearest;
+  return blockCovering(blocks, line);
 }
 
 /** Scroll offset that places `spot` `padding` pixels below the top of the pane. */

@@ -4,6 +4,7 @@ import {
   divisions,
   effectiveUnit,
   nextPrefix,
+  parseScalar,
   parseSection,
   serializeSection,
   slugify,
@@ -65,6 +66,21 @@ describe("section files", () => {
     expect(saved).toContain('title: "A: B"');
     expect(saved).toContain('synopsis: ""');
     expect(saved.endsWith("---\nLine\n")).toBe(true);
+  });
+
+  it("reads quoted scalars, a bad role, and a file with no header", () => {
+    expect(parseScalar('"say \\"hi\\"\\n"')).toBe('say "hi"\n');
+    expect(parseScalar("'it''s'")).toBe("it's");
+    const quoted = parseSection("---\nid: a\ntitle: T\nsynopsis: s\nstatus: idea\nrole: side\nnot a field\n---\nBody\n");
+    expect(quoted.header.role).toBe("body");
+    expect(quoted.warnings.some((warning) => warning.includes("Role"))).toBe(true);
+    expect(quoted.warnings.some((warning) => warning.includes("Ignored"))).toBe(true);
+    const bare = parseSection("No header\n");
+    expect(bare.header.title).toBe("Untitled");
+    expect(bare.body).toBe("No header\n");
+    expect(bare.warnings.some((warning) => warning.includes("Missing header"))).toBe(true);
+    const thin = parseSection("---\ntitle: T\n---\n");
+    expect(thin.warnings.some((warning) => warning.includes("missing id"))).toBe(true);
   });
 
   it("reads and writes the unit, and keeps a legacy page break until a unit is set", () => {

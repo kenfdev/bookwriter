@@ -34,50 +34,56 @@ function prefixFootnotes(line: string, sectionId: string): string {
   });
 }
 
+type FenceStep = { fence: Fence | null; copy: boolean };
+
+function stepFence(line: string, fence: Fence | null): FenceStep {
+  const mark = fenceMark(line);
+  if (!mark) return { fence, copy: fence !== null };
+  if (!fence) return { fence: { char: mark.char, len: mark.len }, copy: true };
+  if (closesFence(fence, mark)) return { fence: null, copy: true };
+  return { fence, copy: true };
+}
+
+function unnumbered(text: string): string {
+  if (/\{\s*-\s*\}/.test(text)) return text;
+  if (text.length === 0) return "{-}";
+  return `${text} {-}`.trimStart();
+}
+
+function shiftHeading(line: string, options: TransformOptions, warnings: string[]): string | null {
+  const heading = /^(#{1,6})([ \t]+)(.*)$/.exec(line);
+  if (!heading) return null;
+  const raw = heading[1].length + options.depth;
+  const clamped = clampHeadingLevel(raw);
+  if (clamped.clamped) warnings.push(`A heading of level ${raw} was written at level ${clamped.level}.`);
+  let text = heading[3];
+  if (options.sectionId) text = prefixFootnotes(text, options.sectionId);
+  if (options.front) text = unnumbered(text);
+  return "#".repeat(clamped.level) + heading[2] + text;
+}
+
+function proseLine(line: string, options: TransformOptions): string {
+  if (!options.sectionId) return line;
+  return prefixFootnotes(line, options.sectionId);
+}
+
 /**
  * Shift body headings by the section depth and, when asked, prefix footnote labels.
  * Fenced code is copied through unchanged.
  */
 export function transformBody(body: string, options: TransformOptions): Transformed {
   const warnings: string[] = [];
-  const lines = body.split("\n");
   const out: string[] = [];
   let fence: Fence | null = null;
 
-  for (const line of lines) {
-    const mark = fenceMark(line);
-    if (mark && !fence) {
-      fence = { char: mark.char, len: mark.len };
+  for (const line of body.split("\n")) {
+    const stepped = stepFence(line, fence);
+    fence = stepped.fence;
+    if (stepped.copy) {
       out.push(line);
       continue;
     }
-    if (mark && fence && closesFence(fence, mark)) {
-      fence = null;
-      out.push(line);
-      continue;
-    }
-    if (fence) {
-      out.push(line);
-      continue;
-    }
-
-    const heading = /^(#{1,6})([ \t]+)(.*)$/.exec(line);
-    if (heading) {
-      const raw = heading[1].length + options.depth;
-      const clamped = clampHeadingLevel(raw);
-      if (clamped.clamped) {
-        warnings.push(`A heading of level ${raw} was written at level ${clamped.level}.`);
-      }
-      let text = heading[3];
-      if (options.front && !/\{\s*-\s*\}/.test(text)) {
-        text = `${text} {-}`.trimStart();
-        if (heading[3].length === 0) text = "{-}";
-      }
-      out.push("#".repeat(clamped.level) + heading[2] + text);
-      continue;
-    }
-
-    out.push(options.sectionId ? prefixFootnotes(line, options.sectionId) : line);
+    out.push(shiftHeading(line, options, warnings) ?? proseLine(line, options));
   }
 
   if (fence) warnings.push("Unclosed code fence.");
