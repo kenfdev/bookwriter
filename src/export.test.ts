@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { exportBook, exportNoteGroups, transformBody } from "./export";
+import { exportBook, exportDocxFiles, exportNoteGroups, transformBody } from "./export";
 import { parseSection, type TreeNode } from "./model";
 
 function node(
@@ -247,5 +247,102 @@ describe("export", () => {
       "Opens.\n",
     );
     expect(exportBook([opening]).markdown.startsWith("# Scene")).toBe(true);
+  });
+
+  it("writes one word file for each front-matter piece and each chapter", () => {
+    const inside = node(
+      "section",
+      { id: "inside", title: "Inside", synopsis: "", status: "draft", role: "body", unit: "text" },
+      "Inside the chapter.\n",
+    );
+    const nested = node(
+      "section",
+      { id: "nested", title: "Nested", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      "Nested body.\n",
+    );
+    const first = node(
+      "group",
+      { id: "one", title: "The (not so) New Productivity Curve", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      "Opener.\n",
+      [inside, nested],
+    );
+    const second = node(
+      "section",
+      { id: "two", title: "Junior Partners?", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      "Second.\n",
+    );
+    const part = node(
+      "group",
+      { id: "part", title: "You and your Agents.", synopsis: "", status: "draft", role: "body", unit: "part" },
+      "Part opener.\n",
+      [first, second],
+    );
+    const note = node(
+      "section",
+      { id: "note", title: "A Note", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      "Child of front.\n",
+    );
+    const introduction = node(
+      "group",
+      { id: "introduction", title: "Introduction", synopsis: "", status: "draft", role: "front", unit: "section" },
+      "Intro.\n",
+      [note],
+    );
+    const buried = node(
+      "section",
+      { id: "buried", title: "Buried", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      "Gone.\n",
+    );
+    const trash = node(
+      "group",
+      { id: "trash", title: "Trash", synopsis: "", status: "idea", role: "body" },
+      "",
+      [buried],
+    );
+    const exported = exportDocxFiles([
+      node("section", { id: "kills", title: "Twenty kills per second.", synopsis: "", status: "draft", role: "front" }, "Kills.\n"),
+      node("section", { id: "preface", title: "Preface", synopsis: "", status: "draft", role: "front" }, "Front.\n"),
+      introduction,
+      node("section", { id: "loose", title: "Loose", synopsis: "", status: "draft", role: "body", unit: "text" }, "Loose text.\n"),
+      part,
+      trash,
+      node("section", { id: "preface-2", title: "Preface", synopsis: "", status: "draft", role: "front" }, "Again.\n"),
+      node("section", { id: "blank", title: " ... ", synopsis: "", status: "draft", role: "front" }, ""),
+      node("section", { id: "hello", title: "Hello: World/Two", synopsis: "", status: "draft", role: "front" }, ""),
+    ]);
+
+    expect(exported.warnings).toEqual([]);
+    expect(exported.files.map((file) => file.name)).toEqual([
+      "FM-Twenty kills per second.docx",
+      "FM-Preface.docx",
+      "FM-Introduction.docx",
+      "01-The (not so) New Productivity Curve.docx",
+      "02-Nested.docx",
+      "03-Junior Partners.docx",
+      "FM-Preface-2.docx",
+      "FM-untitled.docx",
+      "FM-Hello WorldTwo.docx",
+    ]);
+    const chapter = exported.files[3].markdown;
+    expect(chapter).toContain('<p class="chapter-number">Chapter 1</p>');
+    expect(chapter).toContain("## Inside");
+    expect(chapter).toContain("Inside the chapter.");
+    expect(chapter).toContain('<p class="chapter-number">Chapter 2</p>');
+    expect(chapter).toContain("Nested body.");
+    expect(chapter).not.toContain("Second.");
+    expect(chapter).not.toContain("Part opener.");
+    const nestedFile = exported.files[4].markdown;
+    expect(nestedFile).toContain('<p class="chapter-number">Chapter 2</p>');
+    expect(nestedFile).toContain("# Nested");
+    expect(nestedFile).not.toContain("Opener.");
+    expect(exported.files[5].markdown).toContain('<p class="chapter-number">Chapter 3</p>');
+    expect(exported.files[5].markdown).toContain("# Junior Partners?");
+    const front = exported.files[2].markdown;
+    expect(front).toContain("# Introduction {-}\n\nIntro.");
+    expect(front).toContain("## A Note {-}\n\nChild of front.");
+    expect(front).not.toContain("Chapter");
+    expect(exported.files.some((file) => file.markdown.includes("Loose text."))).toBe(false);
+    expect(exported.files.some((file) => file.markdown.includes("Gone."))).toBe(false);
+    expect(exported.files[0].markdown).toContain("# Twenty kills per second. {-}");
   });
 });

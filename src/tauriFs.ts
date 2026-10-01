@@ -21,3 +21,8 @@ export function allowBook(root: string): Promise<void> {
 export function startupBookPath(): Promise<string> {
   return invoke("startup_book_path");
 }
+
+/** Ask Pandoc to write one Word file. `resourceDir` is the book folder, so picture paths resolve. */
+export function pandocDocx(markdown: string, output: string, resourceDir: string): Promise<void> {
+  return invoke("pandoc_docx", { markdown, output, resourceDir });
+}

@@ -13,4 +13,5 @@ commands.allow = [
   "remove_path",
   "allow_book",
   "startup_book_path",
+  "pandoc_docx",
 ]

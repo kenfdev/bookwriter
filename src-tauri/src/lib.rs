@@ -1,7 +1,8 @@
 use serde::Serialize;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::PathBuf;
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use tauri::Manager;
 
 #[derive(Serialize)]
@@ -187,6 +188,60 @@ fn startup_book_path() -> Result<String, String> {
     spec_book_path().ok_or_else(|| "Open a book.".to_string())
 }
 
+#[tauri::command]
+fn pandoc_docx(markdown: String, output: String, resource_dir: String) -> Result<(), String> {
+    let produced = run_pandoc(&markdown, &output, &resource_dir).map_err(pandoc_io_error)?;
+    finish_pandoc(produced)
+}
+
+fn run_pandoc(markdown: &str, output: &str, resource_dir: &str) -> std::io::Result<Output> {
+    spawn_pandoc(output, resource_dir).and_then(|child| feed_pandoc(child, markdown))
+}
+
+fn spawn_pandoc(output: &str, resource_dir: &str) -> std::io::Result<Child> {
+    Command::new("pandoc")
+        .current_dir(resource_dir)
+        .args(["--from=markdown", "--to=docx", "-o", output])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+}
+
+fn feed_pandoc(mut child: Child, markdown: &str) -> std::io::Result<Output> {
+    write_stdin(child.stdin.as_mut(), markdown)?;
+    child.wait_with_output()
+}
+
+fn write_stdin(stdin: Option<&mut ChildStdin>, markdown: &str) -> std::io::Result<()> {
+    stdin.map(|pipe| pipe.write_all(markdown.as_bytes())).unwrap_or(Ok(()))
+}
+
+fn finish_pandoc(output: Output) -> Result<(), String> {
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(pandoc_stderr(&output))
+    }
+}
+
+fn pandoc_stderr(output: &Output) -> String {
+    let text = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if text.is_empty() {
+        "Pandoc failed.".to_string()
+    } else {
+        text
+    }
+}
+
+fn pandoc_io_error(error: std::io::Error) -> String {
+    if error.kind() == ErrorKind::NotFound {
+        "Pandoc is not installed.".to_string()
+    } else {
+        error.to_string()
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     if help_requested() {
@@ -207,7 +262,8 @@ pub fn run() {
             move_file,
             remove_path,
             allow_book,
-            startup_book_path
+            startup_book_path,
+            pandoc_docx
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bookwriter");
@@ -310,5 +366,51 @@ mod tests {
         assert!(include_str!("../../README.md").contains(USAGE.trim_end()));
         let _ = startup_book_path();
         let _ = spec_book_path();
+    }
+
+    #[test]
+    fn writes_a_docx_when_pandoc_is_installed() {
+        if Command::new("pandoc").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = temp_dir();
+        let output = dir.join("one.docx");
+        pandoc_docx(
+            "<p class=\"chapter-number\">Chapter 2</p>\n\n# Rule\n\n![Missing](images/missing.png)\n\nSee.[^a]\n\n[^a]: Note.\n".into(),
+            output.to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        let document = unzip_entry(&output, "word/document.xml");
+        assert!(document.contains("Chapter 2"));
+        assert!(document.contains("Rule"));
+        let notes = unzip_entry(&output, "word/footnotes.xml");
+        assert!(notes.contains("Note."));
+    }
+
+    fn unzip_entry(path: &std::path::Path, name: &str) -> String {
+        let output = Command::new("unzip")
+            .args(["-p", &path.to_string_lossy(), name])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    #[test]
+    fn reports_pandoc_failure() {
+        assert_eq!(finish_pandoc(failed_pandoc("")).unwrap_err(), "Pandoc failed.");
+        assert_eq!(finish_pandoc(failed_pandoc("pandoc: boom\n")).unwrap_err(), "pandoc: boom");
+        let missing = std::io::Error::new(ErrorKind::NotFound, "no such file");
+        assert_eq!(pandoc_io_error(missing), "Pandoc is not installed.");
+        let denied = std::io::Error::new(ErrorKind::PermissionDenied, "denied");
+        assert_eq!(pandoc_io_error(denied), "denied");
+    }
+
+    fn failed_pandoc(stderr: &str) -> Output {
+        Output {
+            status: Command::new("false").status().unwrap(),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
     }
 }

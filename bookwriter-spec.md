@@ -259,6 +259,8 @@ class Foo {
 
 The application stops at that Markdown file. PDF, EPUB, and Word are Pandoc's job, run on the exported file. Picture paths are left as written, relative to the book folder. Run Pandoc from the book folder so a picture path resolves. Bookwriter does not grow a compile engine of its own.
 
+Export Chapters to Word writes each front-matter piece and each chapter as its own Word file in a directory the writer chooses. A front-matter file is named `FM-title.docx` and holds that piece together with the sections inside it. A chapter file is named `cc-title.docx`, where `cc` is the chapter number written in at least two digits and `title` is that chapter's title, and it holds the sections inside the chapter. A part is not its own file. Pandoc does the conversion, run from the book folder so a picture path resolves.
+
 ## Application
 
 The program is written in TypeScript.

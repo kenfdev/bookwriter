@@ -23,7 +23,7 @@ import {
   type DropZone,
 } from "./book";
 import { COMMANDS, applyCommand, latestLanguage, type CommandId, type MarkupCommand } from "./commands";
-import { exportBook } from "./export";
+import { exportBook, exportDocxFiles } from "./export";
 import { nextMatch, previousMatch, type FindHit, type FindPart } from "./find";
 import { exportPdfWithPictures } from "./pdf";
 import { rasterizePicture } from "./rasterize";
@@ -34,7 +34,7 @@ import { joinPath, parentPath } from "./path";
 import { PICTURE_EXTENSIONS, placePicture, resolvePictureSources } from "./pictures";
 import { renderBook, renderGroup, renderSection } from "./preview";
 import { clampPreviewWidth, previewWidthFromPointer } from "./split";
-import { allowBook, startupBookPath, tauriFs } from "./tauriFs";
+import { allowBook, pandocDocx, startupBookPath, tauriFs } from "./tauriFs";
 import { dropRedo, emptyTrail, historyStep, noteVisit, redoVisit, undoVisit, type Trail } from "./trail";
 
 const fs = tauriFs;
@@ -1426,6 +1426,69 @@ async function writePdfFile(destination: string): Promise<void> {
   saveState.textContent = exportStatus(result.warnings.length);
 }
 
+async function exportDocxManuscript(): Promise<void> {
+  if (!book) return;
+  await safeDocxExport();
+}
+
+async function safeDocxExport(): Promise<void> {
+  try {
+    await writeDocxExport();
+  } catch (error) {
+    showWarnings([`Word export failed: ${String(error)}`]);
+    saveState.textContent = "Export failed";
+  }
+}
+
+async function writeDocxExport(): Promise<void> {
+  await flush();
+  const loaded = await loadBook(fs, book!.root);
+  book = loaded;
+  const directory = await pickDocxDirectory(loaded.root);
+  if (typeof directory !== "string") return;
+  await writeDocxFiles(directory);
+}
+
+function pickDocxDirectory(root: string) {
+  return open({
+    directory: true,
+    title: "Export chapters to Word",
+    defaultPath: root,
+  });
+}
+
+async function writeDocxFiles(directory: string): Promise<void> {
+  const result = exportDocxFiles(manuscriptNodes(book!.nodes));
+  await writePresentDocx(directory, result);
+}
+
+async function writePresentDocx(directory: string, result: ReturnType<typeof exportDocxFiles>): Promise<void> {
+  if (result.files.length === 0) {
+    emptyDocxExport();
+    return;
+  }
+  await finishDocxExport(directory, result);
+}
+
+function emptyDocxExport(): void {
+  showWarnings(["There are no chapters or front matter to export."]);
+  saveState.textContent = "Export failed";
+}
+
+async function finishDocxExport(directory: string, result: ReturnType<typeof exportDocxFiles>): Promise<void> {
+  await writeDocxList(directory, result.files);
+  showWarnings(result.warnings);
+  saveState.textContent = exportStatus(result.warnings.length);
+}
+
+async function writeDocxList(directory: string, files: ReturnType<typeof exportDocxFiles>["files"]): Promise<void> {
+  for (const file of files) await writeDocxFile(directory, file);
+}
+
+async function writeDocxFile(directory: string, file: ReturnType<typeof exportDocxFiles>["files"][number]): Promise<void> {
+  await pandocDocx(withTrailingNewline(file.markdown), joinPath(directory, file.name), book!.root);
+}
+
 createDialog.addEventListener("click", (event) => {
   if (event.target === createDialog && createDialog.open) createDialog.close("cancel");
 });
@@ -2372,6 +2435,7 @@ async function installMenu(): Promise<void> {
           await MenuItem.new({ id: "open", text: "Open Book…", accelerator: "CmdOrCtrl+O", action: () => void openFolder() }),
           await MenuItem.new({ id: "export", text: "Export Manuscript…", accelerator: "CmdOrCtrl+Shift+E", action: () => void exportManuscript() }),
           await MenuItem.new({ id: "export-pdf", text: "Export PDF…", action: () => void exportPdfManuscript() }),
+          await MenuItem.new({ id: "export-docx", text: "Export Chapters to Word…", action: () => void exportDocxManuscript() }),
           await PredefinedMenuItem.new({ item: "Separator" }),
           await MenuItem.new({ id: "new-section", text: "Text", action: () => void create("section") }),
           await MenuItem.new({ id: "new-group", text: "Folder", action: () => void create("group") }),
@@ -2422,6 +2486,7 @@ fileButton.addEventListener("pointerdown", (event) => {
     { label: "Open", shortcut: formatAccelerator("CmdOrCtrl+O", macShortcuts), run: () => void openFolder() },
     { label: "Export", shortcut: formatAccelerator("CmdOrCtrl+Shift+E", macShortcuts), run: () => void exportManuscript() },
     { label: "Export PDF", run: () => void exportPdfManuscript() },
+    { label: "Export Word", run: () => void exportDocxManuscript() },
   ]);
 });
 editButton.addEventListener("pointerdown", (event) => {

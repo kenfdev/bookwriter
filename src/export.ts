@@ -284,3 +284,130 @@ function extendsGroup(group: NoteGroup | undefined, key: string): group is NoteG
 function joinGroup(group: NoteGroup): string {
   return group.parts.join("\n\n");
 }
+
+export type DocxFile = { name: string; markdown: string };
+
+/** One Word file for each front-matter piece, and one for each chapter. Parts are not files. */
+export function exportDocxFiles(nodes: TreeNode[]): { files: DocxFile[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const files: DocxFile[] = [];
+  collectDocx(nodes, [], warnings, divisions(nodes), files, new Set());
+  return { files, warnings };
+}
+
+function collectDocx(
+  nodes: TreeNode[],
+  ancestors: TreeNode[],
+  warnings: string[],
+  numbered: Map<string, Division>,
+  files: DocxFile[],
+  used: Set<string>,
+): void {
+  withoutTrash(nodes).forEach((node) => addDocx(node, ancestors, warnings, numbered, files, used));
+}
+
+function addDocx(
+  node: TreeNode,
+  ancestors: TreeNode[],
+  warnings: string[],
+  numbered: Map<string, Division>,
+  files: DocxFile[],
+  used: Set<string>,
+): void {
+  if (isDocxFile(node, ancestors)) pushDocx(files, used, node, warnings, numbered);
+  walkDocx(node, ancestors, warnings, numbered, files, used);
+}
+
+function isDocxFile(node: TreeNode, ancestors: TreeNode[]): boolean {
+  return frontRoot(node, ancestors) || isChapter(node);
+}
+
+function frontRoot(node: TreeNode, ancestors: TreeNode[]): boolean {
+  return isFront(node, ancestors) && !parentIsFront(ancestors);
+}
+
+function parentIsFront(ancestors: TreeNode[]): boolean {
+  const parent = ancestors.at(-1);
+  return parent != null && isFront(parent, ancestors.slice(0, -1));
+}
+
+function walkDocx(
+  node: TreeNode,
+  ancestors: TreeNode[],
+  warnings: string[],
+  numbered: Map<string, Division>,
+  files: DocxFile[],
+  used: Set<string>,
+): void {
+  if (frontRoot(node, ancestors)) return;
+  collectDocx(node.children, [...ancestors, node], warnings, numbered, files, used);
+}
+
+function pushDocx(
+  files: DocxFile[],
+  used: Set<string>,
+  node: TreeNode,
+  warnings: string[],
+  numbered: Map<string, Division>,
+): void {
+  files.push(docxFile(used, node, warnings, numbered));
+}
+
+function docxFile(used: Set<string>, node: TreeNode, warnings: string[], numbered: Map<string, Division>): DocxFile {
+  return { name: uniqueDocxName(used, docxName(node, numbered)), markdown: docxMarkdown(node, warnings, numbered) };
+}
+
+function docxMarkdown(node: TreeNode, warnings: string[], numbered: Map<string, Division>): string {
+  return collectPieces([node], [], warnings, numbered, false).map(pieceText).join("\n\n");
+}
+
+function pieceText(piece: Piece): string {
+  return piece.markdown;
+}
+
+function docxName(node: TreeNode, numbered: Map<string, Division>): string {
+  return `${docxStem(node, numbered)}.docx`;
+}
+
+function docxStem(node: TreeNode, numbered: Map<string, Division>): string {
+  return `${docxCode(numbered.get(node.header.id))}-${docxTitle(node.header.title)}`;
+}
+
+function docxCode(division: Division | undefined): string {
+  return division?.unit === "chapter" ? chapterCode(division.number) : "FM";
+}
+
+function chapterCode(number: number): string {
+  return String(number).padStart(2, "0");
+}
+
+function docxTitle(title: string): string {
+  return cleanedTitle(title) || "untitled";
+}
+
+function cleanedTitle(title: string): string {
+  return title.replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").trim().replace(/\.+$/, "");
+}
+
+function uniqueDocxName(used: Set<string>, name: string): string {
+  const unique = unusedName(used, name, 1);
+  used.add(unique);
+  return unique;
+}
+
+function unusedName(used: Set<string>, name: string, n: number): string {
+  const candidate = candidateName(name, n);
+  return taken(used, candidate) ? unusedName(used, name, n + 1) : candidate;
+}
+
+function candidateName(name: string, n: number): string {
+  return n === 1 ? name : suffixedName(name, n);
+}
+
+function taken(used: Set<string>, name: string): boolean {
+  return used.has(name);
+}
+
+function suffixedName(name: string, n: number): string {
+  return name.replace(/\.docx$/, `-${n}.docx`);
+}
