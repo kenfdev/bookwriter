@@ -57,7 +57,51 @@ describe("jpeg", () => {
     const noisy = Buffer.concat([jpeg.subarray(0, 2), Buffer.from([0x00, 0xff, 0xff, 0xd0, 0xff, 0x01]), jpeg.subarray(2)]);
     expect(parseJpeg(noisy)).toMatchObject({ width: 30, height: 20, components: 3, orientation: 6 });
   });
+
+  it("reads a little-endian orientation and rejects values outside 1 to 8", () => {
+    expect(parseJpeg(littleEndianJpeg(8)).orientation).toBe(8);
+    expect(parseJpeg(makeJpeg(30, 20, 3, 0)).orientation).toBe(1);
+    expect(parseJpeg(makeJpeg(30, 20, 3, 9)).orientation).toBe(1);
+  });
+
+  it("records an Adobe transform and inverts CMYK", async () => {
+    const rgb = await encodeImage(withAdobe(makeJpeg(30, 20, 3), 0));
+    expect(rgb.extra).toContain("/ColorTransform 0");
+    expect(rgb.extra).not.toContain("/Decode ");
+    const cmyk = await encodeImage(withAdobe(makeJpeg(30, 20, 4), 2));
+    expect(cmyk.colorSpace).toBe("/DeviceCMYK");
+    expect(cmyk.extra).toContain("/ColorTransform 1");
+    expect(cmyk.extra).toContain("/Decode [1 0 1 0 1 0 1 0]");
+    const plain = await encodeImage(makeJpeg(30, 20, 4));
+    expect(plain.extra).not.toContain("/Decode ");
+  });
 });
+
+function withAdobe(jpeg: Buffer, transform: number): Buffer {
+  const body = [0x41, 0x64, 0x6f, 0x62, 0x65, 0, 0, 0, 0, 0, 0, transform];
+  const segment = Buffer.from([0xff, 0xee, 0, body.length + 2, ...body]);
+  return Buffer.concat([jpeg.subarray(0, 2), segment, jpeg.subarray(2)]);
+}
+
+/** Same stand-in JPEG as makeJpeg, with the TIFF header stored little-endian. */
+function littleEndianJpeg(orientation: number): Buffer {
+  const jpeg = makeJpeg(30, 20, 3, orientation);
+  const exif = jpeg.indexOf(Buffer.from("Exif"));
+  jpeg[exif + 6] = 0x49;
+  jpeg[exif + 7] = 0x49;
+  jpeg[exif + 8] = 0x2a;
+  jpeg[exif + 9] = 0;
+  jpeg[exif + 10] = 8;
+  jpeg[exif + 11] = 0;
+  jpeg[exif + 12] = 0;
+  jpeg[exif + 13] = 0;
+  jpeg.writeUInt16LE(1, exif + 14);
+  jpeg.writeUInt16LE(0x0112, exif + 16);
+  jpeg.writeUInt16LE(3, exif + 18);
+  jpeg.writeUInt32LE(1, exif + 20);
+  jpeg.writeUInt16LE(orientation, exif + 24);
+  return jpeg;
+}
 
 describe("png", () => {
   it("passes plain RGB data through with a PNG predictor", async () => {

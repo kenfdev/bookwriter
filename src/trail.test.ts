@@ -4,6 +4,7 @@ import { dropRedo, emptyTrail, historyStep, noteVisit, redoVisit, undoVisit } fr
 describe("section undo", () => {
   it("undoes a section change after the edits made in the current visit", () => {
     expect(historyStep(2, 1)).toBe("local");
+    expect(historyStep(1, 1)).toBe("local");
     expect(historyStep(0, 1)).toBe("switch");
     expect(historyStep(0, 0)).toBe("none");
   });

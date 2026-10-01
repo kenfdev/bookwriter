@@ -2,7 +2,7 @@ import { access, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createNode, deleteNode, emptyTrash, loadBook, moveNode, planMove, saveNode } from "./book";
+import { createNode, deleteNode, emptyTrash, loadBook, manuscriptNodes, moveNode, planMove, saveNode } from "./book";
 import { exportBook } from "./export";
 import { filePath, type TreeNode } from "./model";
 import { nodeFs } from "./nodeFs";
@@ -37,6 +37,13 @@ describe("planMove", () => {
     ]);
 
     expect(planMove(roots, "group", "child", "after")).toEqual([]);
+    expect(planMove(roots, "a", "group", "before")).toEqual([{ parentId: null, order: ["b", "a", "group"] }]);
+    expect(planMove(roots, "missing", "a", "before")).toEqual([]);
+
+    const child = roots[2].children[0];
+    child.kind = "group";
+    child.children = [{ ...child, kind: "section", header: { ...child.header, id: "grand", title: "grand" }, children: [] }];
+    expect(planMove(roots, "group", "grand", "after")).toEqual([]);
   });
 
   it("drops a section into trash and will not move the trash folder", () => {
@@ -57,6 +64,47 @@ describe("planMove", () => {
       { parentId: "trash", order: ["b"] },
     ]);
     expect(planMove(roots, "trash", "a", "before")).toEqual([]);
+  });
+});
+
+describe("manuscript order", () => {
+  it("sorts by prefix number, then by name, and skips the trash", () => {
+    const section = (id: string): TreeNode => ({
+      kind: "section",
+      header: { id, title: id, synopsis: "", status: "idea", role: "body" },
+      body: "",
+      prefix: "010",
+      slug: id,
+      dir: "",
+      entryName: "",
+      children: [],
+    });
+    const trash = section("trash");
+    trash.kind = "group";
+    expect(manuscriptNodes([section("a"), trash, section("b")]).map((node) => node.header.id)).toEqual(["a", "b"]);
+  });
+
+  it("loads numeric prefix order and reports a duplicated prefix", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bookwriter-"));
+    const fs = nodeFs();
+    const manuscript = join(root, "manuscript");
+    await fs.mkdir(manuscript);
+    await fs.writeText(join(root, "book.yaml"), "title: Trial\n");
+    const write = (name: string, id: string) =>
+      fs.writeText(
+        join(manuscript, name),
+        `---\nid: ${id}\ntitle: ${id}\nsynopsis: ""\nstatus: idea\nrole: body\n---\n`,
+      );
+    await write("010-m.md", "m");
+    await write("010-c.md", "c");
+    await write("20-b.md", "b");
+    await write("100-a.md", "a");
+
+    const book = await loadBook(fs, root);
+    const nodes = manuscriptNodes(book.nodes);
+    expect(nodes.map((node) => node.header.id)).toEqual(["c", "m", "b", "a"]);
+    expect(nodes.map((node) => node.prefix)).toEqual(["010", "010", "20", "100"]);
+    expect(book.warnings.some((warning) => warning.includes("Duplicate prefix 010"))).toBe(true);
   });
 });
 
@@ -164,5 +212,35 @@ describe("the book folder", () => {
     await emptyTrash(fs, book);
     book = await loadBook(fs, root);
     expect(book.nodes.find((node) => node.header.id === "trash")?.children).toEqual([]);
+  });
+
+  it("renumbers the sections that stay when the first one is deleted", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bookwriter-"));
+    const fs = nodeFs();
+    await fs.mkdir(join(root, "manuscript"));
+    await fs.writeText(join(root, "book.yaml"), "title: Trial\n");
+
+    let book = await loadBook(fs, root);
+    const chapter = await createNode(fs, book, null, "group", "The Rule");
+    book = await loadBook(fs, root);
+    const first = await createNode(fs, book, chapter, "section", "Alpha");
+    await createNode(fs, book, chapter, "section", "Beta");
+    await createNode(fs, book, chapter, "section", "Gamma");
+    book = await loadBook(fs, root);
+
+    await deleteNode(fs, book, first);
+    book = await loadBook(fs, root);
+    expect(book.nodes[0].children.map((child) => child.entryName)).toEqual(["010-beta.md", "020-gamma.md"]);
+
+    const trashed = book.nodes.find((node) => node.header.id === "trash");
+    await deleteNode(fs, book, "missing");
+    await deleteNode(fs, book, "trash");
+    await deleteNode(fs, book, trashed?.children[0].header.id ?? "");
+    book = await loadBook(fs, root);
+
+    expect(book.nodes[0].children.map((child) => child.entryName)).toEqual(["010-beta.md", "020-gamma.md"]);
+    expect(book.nodes.find((node) => node.header.id === "trash")?.children.map((child) => child.header.id)).toEqual([
+      "alpha",
+    ]);
   });
 });

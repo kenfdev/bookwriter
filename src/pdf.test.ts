@@ -49,11 +49,14 @@ describe("pdf export", () => {
       const at = Number(entry[1]);
       expect(result.pdf.slice(at, at + `${index + 1} 0 obj`.length)).toBe(`${index + 1} 0 obj`);
     });
+    const size = Number(/\/Size (\d+)/.exec(result.pdf)![1]);
+    expect(entries).toHaveLength(size - 1);
+    expect(result.pdf).not.toContain("undefined");
   });
 
   it("draws a directory tree and a dash rule instead of question marks", () => {
     const result = markdownToPdf(
-      ["```", "HTW/", "  ├── .gitignore", "  │   └── Cave.java", "  └ missing", "────────", "\u2571\u2572\u2573\u253c", "```", ""].join("\n"),
+      ["```", "HTW/", "  ├── .gitignore", "  │   └── Cave.java", "  └ missing", "────────", "\u2571\u2572\u2573\u253c\u257f", "```", ""].join("\n"),
     );
     expect(result.pdf).toContain("HTW/");
     expect(result.pdf).toContain("|-- .gitignore");
@@ -89,7 +92,7 @@ describe("pdf export", () => {
     expect(texts).toContain("three");
     expect(texts).toContain("four");
     expect(texts).toContain("After.");
-    expect(result.pdf).toMatch(/0\.6 G 0\.5 w [\d.]+ [\d.]+ m [\d.]+ [\d.]+ l S/);
+    expect(result.pdf).toMatch(/0\.6 G 0\.5 w 72 [\d.]+ m 540 [\d.]+ l S/);
   });
 
   it("is plain ASCII so the text writer can save it", () => {
@@ -250,6 +253,16 @@ describe("pdf export", () => {
   });
 });
 
+/** x and y of the first text object that shows `literal` exactly. */
+function placed(pdf: string, literal: string): { x: string; y: string } | null {
+  const body = literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const exact = new RegExp(`\\(${body}\\) Tj`);
+  for (const block of pdf.matchAll(/BT [\d.]+ g ([\d.]+) ([\d.]+) Td([\s\S]*?) ET/g)) {
+    if (exact.test(block[3])) return { x: block[1], y: block[2] };
+  }
+  return null;
+}
+
 function unescapePdf(text: string): string {
   return text.replace(/\\([0-7]{3}|.)/g, (_, code: string) => (code.length === 3 ? String.fromCharCode(parseInt(code, 8)) : code));
 }
@@ -338,8 +351,8 @@ describe("pdf code", () => {
     expect(ys[0] - ys[1]).toBeCloseTo(11.5);
     expect(ys[1] - ys[2]).toBeCloseTo(23);
     // Indentation is real spaces, so it is the same x for every line.
-    const xs = new Set([...pdf.matchAll(/BT 0 g ([\d.]+) ([\d.]+) Td \/F3/g)].map((m) => m[1]));
-    expect(xs.size).toBe(1);
+    const xs = [...pdf.matchAll(/BT 0 g ([\d.]+) ([\d.]+) Td \/F3/g)].map((m) => m[1]);
+    expect(new Set(xs)).toEqual(new Set(["79.00"]));
   });
 
   it("expands tabs to the next four-column stop", () => {
@@ -359,6 +372,7 @@ describe("pdf code", () => {
     const rows = shown(pdf).filter((piece) => piece.font === "F3" && piece.text !== "\u00bb" && piece.text !== "\xbb");
     expect(rows.length).toBeGreaterThan(1);
     expect(rows.map((row) => row.text).join("")).toBe("0123456789".repeat(20));
+    expect(rows[0].text).toHaveLength(83);
     for (const row of rows) expect(row.text.length * 0.6 * 9).toBeLessThanOrEqual(468);
     expect(pdf).toContain("0.45 g");
   });
@@ -533,6 +547,115 @@ describe("pdf pictures", () => {
         expect(stream[2].endsWith("\n")).toBe(true);
       }
     });
+  });
+
+  it("keeps a zero width out and honours a one-point width", async () => {
+    await withBook({ "a.png": rgbPng }, async (root) => {
+      const zero = "![Dot](a.png){width=0}\n";
+      const one = "![Dot](a.png){width=1pt}\n";
+      const fs = nodeFs();
+      expect(markdownToPdf(zero, "", await loadPictures(fs, root, zero)).pdf).toMatch(/q 1\.5 0 0 1\.5 /);
+      expect(markdownToPdf(one, "", await loadPictures(fs, root, one)).pdf).toMatch(/q 1 0 0 1 /);
+    });
+  });
+
+  it("centres a caption under a picture that sits in a list", async () => {
+    await withBook({ "a.png": rgbPng }, async (root) => {
+      const md = "- ![Cap](a.png)\n";
+      const { pdf } = markdownToPdf(md, "", await loadPictures(nodeFs(), root, md));
+      expect(placed(pdf, "Cap")).toEqual({ x: "308.29", y: expect.any(String) });
+    });
+  });
+});
+
+describe("pdf edges", () => {
+  it("centres a chapter line and keeps the heading beneath it", () => {
+    const { pdf } = markdownToPdf('<p class="chapter-number">Chapter 1</p>\n\n# The Title {-}\n\nHello.\n');
+    expect(placed(pdf, "Chapter 1")).toEqual({ x: "276.02", y: "702.45" });
+    expect(placed(pdf, "The Title")).toEqual({ x: "72.00", y: "666.05" });
+    expect(placed(pdf, "Hello.")).toEqual({ x: "72.00", y: "645.05" });
+    expect(pdf).toContain("/F2 24 Tf");
+    expect(pdf).not.toContain("{-}");
+    expect(pdf).toMatch(/BT \/F1 9 Tf 303\.50 40 Td \(1\) Tj/);
+  });
+
+  it("numbers ordered lists, bullets the others, and indents quotes", () => {
+    const { pdf } = markdownToPdf("- alpha\n- beta\n\n1. one\n2. two\n\n3. third\n\n> quoted line\n");
+    expect(pdf).toContain("(\\225) Tj");
+    expect(placed(pdf, "alpha")).toEqual({ x: "94.00", y: expect.any(String) });
+    expect(placed(pdf, "1.")).toEqual({ x: "80.00", y: expect.any(String) });
+    expect(placed(pdf, "2.")?.x).toBe("80.00");
+    expect(placed(pdf, "3.")?.x).toBe("80.00");
+    expect(placed(pdf, "quoted line")).toEqual({ x: "90.00", y: expect.any(String) });
+    expect(pdf).toContain("/BaseFont /Symbol >>");
+    expect(pdf).toContain("/BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+  });
+
+  it("sets a table header in bold and the body rows in regular", () => {
+    const { pdf } = markdownToPdf("| Head | Tail |\n| ---- | ---- |\n| one | two |\n| three | four |\n");
+    const rows = shown(pdf).filter((piece) => piece.text !== "1").map((piece) => `${piece.font}:${piece.text}`);
+    expect(rows).toEqual(["F2:Head | Tail", "F1:one | two", "F1:three | four"]);
+  });
+
+  it("indents note text and numbers the notes of each chapter", () => {
+    const first = node("section", { id: "a", title: "A", unit: "chapter" }, "Alpha.[^1]\n\n[^1]: Alpha note.\n");
+    const second = node("section", { id: "b", title: "B", unit: "chapter" }, "Beta.[^1]\n\n[^1]: Beta note.\n");
+    const { pdf } = exportPdf([first, second]);
+    expect(placed(pdf, "1.")).toEqual({ x: "72.00", y: expect.any(String) });
+    expect(placed(pdf, "Alpha note.")).toEqual({ x: "86.00", y: expect.any(String) });
+    expect(placed(pdf, "Beta.[1]")).toEqual({ x: "72.00", y: expect.any(String) });
+    expect(shown(pdf).filter((piece) => piece.text === "1.")).toHaveLength(2);
+  });
+
+  it("draws the winansi edges, the raised digits, and the widths that decide a wrap", () => {
+    const marks = markdownToPdf("a~b \u00a0\u00ff\u2014\u20ac 4\u2074 9\u2079\n");
+    expect(marks.warnings).toEqual([]);
+    expect(marks.pdf).toContain("(a~b ");
+    expect(marks.pdf).toContain("\\240");
+    expect(marks.pdf).toContain("\\377");
+    expect(marks.pdf).toContain("\\227");
+    expect(marks.pdf).toContain("\\200");
+    expect(marks.pdf).toContain("Ts (4) Tj");
+    expect(marks.pdf).toContain("Ts (9) Tj");
+    expect(marks.pdf).not.toContain("NaN");
+
+    const tildes = markdownToPdf("z " + "~".repeat(73) + "\n");
+    expect(shown(tildes.pdf).filter((piece) => piece.text.includes("~")).map((piece) => piece.text.length)).toEqual([72, 1]);
+
+    const spaces = ("ii ".repeat(50)).trim();
+    expect(shown(markdownToPdf(spaces + "\n").pdf).filter((piece) => piece.text.includes("ii")).map((piece) => piece.text)).toEqual([spaces]);
+
+    const zeros = shown(markdownToPdf("`" + "0".repeat(71) + "`\n").pdf).filter((piece) => piece.font === "F3");
+    expect(zeros.map((piece) => piece.text.length)).toEqual([70, 1]);
+
+    const pi = shown(markdownToPdf("\u03c0".repeat(77) + "\n").pdf).filter((piece) => piece.font === "F6");
+    expect(pi.map((piece) => piece.text)).toEqual(["p".repeat(77)]);
+    const cap = shown(markdownToPdf("\u03a0".repeat(70) + "\n").pdf).filter((piece) => piece.font === "F6");
+    expect(cap.map((piece) => piece.text.length)).toEqual([69, 1]);
+
+    const bold = shown(markdownToPdf("**" + "m".repeat(50) + "**\n").pdf).filter((piece) => piece.text.includes("m"));
+    expect(bold.map((piece) => piece.text.length)).toEqual([47, 3]);
+  });
+
+  it("does not leave the last line of a code block alone on the next page", () => {
+    const lines = Array.from({ length: 54 }, (_, i) => `L${String(i).padStart(2, "0")}`);
+    const result = markdownToPdf("Intro.\n\n```\n" + lines.join("\n") + "\n```\n");
+    const counts = [...result.pdf.matchAll(/stream\n([\s\S]*?)endstream/g)].map((match) => (match[1].match(/\(L\d+\) Tj/g) ?? []).length);
+    expect(counts).toEqual([52, 2]);
+  });
+
+  it("keeps a one-character code line", () => {
+    const { pdf } = markdownToPdf("```\nZ\n```\n");
+    expect(pdf).toContain("(Z) Tj");
+  });
+
+  it("gives a second-level heading more room above it than a third-level one", () => {
+    const { pdf } = markdownToPdf("Before.\n\n## Second level\n\n### Third level\n");
+    expect(placed(pdf, "Before.")).toEqual({ x: "72.00", y: "705.00" });
+    expect(placed(pdf, "Second level")).toEqual({ x: "72.00", y: "653.35" });
+    expect(placed(pdf, "Third level")).toEqual({ x: "72.00", y: "613.75" });
+    expect(pdf).toContain("/F2 19 Tf");
+    expect(pdf).toContain("/F2 16 Tf");
   });
 });
 

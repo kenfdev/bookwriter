@@ -44,8 +44,8 @@ describe("preview", () => {
     expect(rendered.html).toContain("missing-fn");
     expect(rendered.html).toContain("broken-fence");
     expect(rendered.html).toContain("Foo");
-    expect(rendered.warnings.some((warning) => warning.includes("[^9]"))).toBe(true);
-    expect(rendered.warnings.some((warning) => warning.includes("Unclosed"))).toBe(true);
+    expect(rendered.warnings).toContain("Footnote [^9] has no definition.");
+    expect(rendered.warnings.filter((warning) => warning.includes("Unclosed"))).toEqual(["Unclosed code fence."]);
   });
 
   it("points a footnote marker at the note in that same section", () => {
@@ -53,6 +53,7 @@ describe("preview", () => {
     const there = section("Also.[^1]\n\n[^1]: There.\n");
     there.header = { ...there.header, id: "outward", title: "Outward" };
     const one = renderSection(here, []);
+    expect(one.warnings).toEqual([]);
     expect(one.html).toContain('href="#fn-inward-1"');
     expect(one.html).toContain('id="fn-inward-1"');
     expect(one.html).toContain('id="fnref-inward-1"');
@@ -85,7 +86,7 @@ describe("preview", () => {
     const rendered = renderSection(section("Hello\n\n```\ncode\n```\n"), []);
     expect(rendered.html).toContain('data-id="inward"');
     expect(rendered.html).toContain('data-line="0"');
-    expect(rendered.html).toContain("<pre data-line=");
+    expect(rendered.html).toContain('<pre data-line="2" data-end="5"');
   });
 
   it("sizes a picture from the width field and does not print that field", () => {
@@ -218,6 +219,37 @@ describe("preview", () => {
     expect(breaks).toHaveLength(2);
     expect(breaks[0]).toContain("<h2>Stay</h2>");
     expect(breaks[1]).toContain("<h2>Next</h2>");
+  });
+
+  it("keeps two inline notes, including one with no trailing newline", () => {
+    const both = renderSection(section("One ^[alpha] and two ^[beta].\n"), []);
+    expect(both.html).toContain("alpha");
+    expect(both.html).toContain("beta");
+    expect(both.html.match(/<li/g)?.length).toBe(2);
+    const bare = renderSection(section("See ^[gamma]"), []);
+    expect(bare.html).toContain("gamma");
+    expect(bare.html).not.toContain("NaN");
+    expect(bare.warnings).toEqual([]);
+  });
+
+  it("warns only when a heading is past level 6", () => {
+    const ancestors = (count: number): TreeNode[] =>
+      Array.from({ length: count }, (_, index) => ({
+        kind: "group",
+        header: { id: `p${index}`, title: `P${index}`, synopsis: "", status: "draft", role: "body" },
+        body: "",
+        prefix: "010",
+        slug: `p${index}`,
+        dir: "",
+        entryName: `p${index}`,
+        children: [],
+      }));
+    const sixth = renderSection(section("Body.\n"), ancestors(5));
+    expect(sixth.html).toContain("<h6>Inward</h6>");
+    expect(sixth.warnings).toEqual([]);
+    expect(renderSection(section("Body.\n"), ancestors(6)).warnings).toContain(
+      '"Inward" is deeper than heading level 6.',
+    );
   });
 
   it("labels a front-matter section", () => {

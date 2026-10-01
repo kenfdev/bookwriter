@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { nodeFs } from "./nodeFs";
-import { placePicture, relativeToBook, resolvePictureSources } from "./pictures";
+import { normalizePath, placePicture, relativeToBook, resolvePictureSources } from "./pictures";
 import { renderSection } from "./preview";
 import type { TreeNode } from "./model";
 
@@ -99,5 +99,39 @@ describe("pictures", () => {
 
     const coded = renderSection(section("A mark is `![x](images/a.jpg)`.\n"), []).html;
     expect(resolvePictureSources(coded, () => "NO")).not.toContain("NO");
+  });
+
+  it("collapses a parent segment and keeps a path that is still above the root", () => {
+    expect(normalizePath("books/..")).toBe("");
+    expect(normalizePath("/books/..")).toBe("/");
+    expect(normalizePath("../../secret.jpg")).toBe("../../secret.jpg");
+  });
+
+  it("suffixes a one-letter name, and a name whose first suffix is taken", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bookwriter-book-"));
+    const outside = await mkdtemp(join(tmpdir(), "bookwriter-pic-"));
+    const fs = nodeFs();
+    await fs.mkdir(join(root, "images"));
+    await writeFile(join(root, "images", "a.jpg"), "first");
+    await writeFile(join(root, "images", "bridge.jpg"), "b1");
+    await writeFile(join(root, "images", "bridge-2.jpg"), "b2");
+    await writeFile(join(outside, "a.jpg"), "second");
+    await writeFile(join(outside, "bridge.jpg"), "b3");
+
+    expect(await placePicture(fs, root, join(outside, "a.jpg"))).toBe("images/a-2.jpg");
+    expect(await placePicture(fs, root, join(outside, "bridge.jpg"))).toBe("images/bridge-3.jpg");
+  });
+
+  it("refuses a bare name, a leading-dot name, and a directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bookwriter-book-"));
+    const outside = await mkdtemp(join(tmpdir(), "bookwriter-pic-"));
+    const fs = nodeFs();
+    await writeFile(join(outside, "notes"), "x");
+    await writeFile(join(outside, ".jpg"), "x");
+    await fs.mkdir(join(outside, "pic.jpg"));
+
+    await expect(placePicture(fs, root, join(outside, "notes"))).rejects.toThrow("Choose a picture file.");
+    await expect(placePicture(fs, root, join(outside, ".jpg"))).rejects.toThrow("Choose a picture file.");
+    await expect(placePicture(fs, root, join(outside, "pic.jpg"))).rejects.toThrow("Choose a picture file.");
   });
 });

@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   assignPrefixes,
+  clampHeadingLevel,
+  codeSpanRanges,
   divisions,
   effectiveUnit,
+  insideSpan,
   nextPrefix,
   parseScalar,
   parseSection,
   serializeSection,
   slugify,
   startsNewPage,
+  stepFence,
   uniqueId,
   wordCount,
   type TreeNode,
@@ -71,6 +75,9 @@ describe("section files", () => {
   it("reads quoted scalars, a bad role, and a file with no header", () => {
     expect(parseScalar('"say \\"hi\\"\\n"')).toBe('say "hi"\n');
     expect(parseScalar("'it''s'")).toBe("it's");
+    expect(parseScalar('"unterminated')).toBe("unterminated");
+    expect(parseScalar("hello'")).toBe("hello'");
+    expect(parseScalar("''")).toBe("");
     const quoted = parseSection("---\nid: a\ntitle: T\nsynopsis: s\nstatus: idea\nrole: side\nnot a field\n---\nBody\n");
     expect(quoted.header.role).toBe("body");
     expect(quoted.warnings.some((warning) => warning.includes("Role"))).toBe(true);
@@ -132,6 +139,7 @@ describe("identity and order", () => {
   });
 
   it("numbers siblings by tens, widening past 990", () => {
+    expect(assignPrefixes(0)).toEqual([]);
     expect(assignPrefixes(3)).toEqual(["010", "020", "030"]);
     expect(assignPrefixes(99)[98]).toBe("990");
     expect(assignPrefixes(100)[0]).toBe("0010");
@@ -201,5 +209,30 @@ describe("word count", () => {
   it("counts whitespace-separated words in the body", () => {
     expect(wordCount("")).toBe(0);
     expect(wordCount("  A dependency points inward.[^1]\n")).toBe(4);
+  });
+});
+
+describe("markup edges", () => {
+  it("clamps a heading into levels 1 through 6 and says when it moved", () => {
+    expect(clampHeadingLevel(0)).toEqual({ level: 1, clamped: true });
+    expect(clampHeadingLevel(1)).toEqual({ level: 1, clamped: false });
+    expect(clampHeadingLevel(6)).toEqual({ level: 6, clamped: false });
+    expect(clampHeadingLevel(7)).toEqual({ level: 6, clamped: true });
+  });
+
+  it("opens and closes a backtick fence, and a tilde line leaves it open", () => {
+    const open = stepFence("```", null);
+    expect(open).toEqual({ fence: { char: "`", len: 3 }, fenced: true });
+    expect(stepFence("~~~", open.fence)).toEqual({ fence: { char: "`", len: 3 }, fenced: true });
+    expect(stepFence("```", open.fence)).toEqual({ fence: null, fenced: true });
+  });
+
+  it("finds closed code spans, including the opening backtick and not the end", () => {
+    expect(codeSpanRanges("``a``")).toEqual([[0, 5]]);
+    expect(codeSpanRanges("`a` `b`")).toEqual([[0, 3], [4, 7]]);
+    expect(insideSpan(0, [[0, 3]])).toBe(true);
+    expect(insideSpan(2, [[0, 3]])).toBe(true);
+    expect(insideSpan(3, [[0, 3]])).toBe(false);
+    expect(insideSpan(0, [[2, 5]])).toBe(false);
   });
 });

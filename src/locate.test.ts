@@ -17,6 +17,11 @@ describe("source offset", () => {
     expect(sourceOffset(source, 2, 3, 0)).toBe(7);
     expect(sourceOffset(source, 2, 3, 0.5)).toBe(10);
     expect(sourceOffset(source, 2, 3, 4)).toBe(13);
+    expect(sourceOffset(source, 0, 1, Number.NaN)).toBe(0);
+  });
+
+  it("counts a leading newline as the first line", () => {
+    expect(lineOffset("\nHello", 1)).toBe(1);
   });
 });
 
@@ -46,7 +51,20 @@ describe("rendered block for a source line", () => {
     expect(offsetFraction(10, 7, 13)).toBeCloseTo(0.5);
     expect(offsetFraction(0, 7, 13)).toBe(0);
     expect(offsetFraction(20, 7, 13)).toBe(1);
+    expect(offsetFraction(1, 0, 1)).toBe(1);
+    expect(offsetFraction(5, 5, 5)).toBe(0);
+    expect(offsetFraction(Number.NaN, 0, 10)).toBe(0);
     expect(scrollToSpot(100, 40, 90, 48)).toBe(102);
     expect(scrollToSpot(10, 40, 50, 48)).toBe(0);
+  });
+
+  it("keeps the short early block, and ignores an empty or non-finite one", () => {
+    expect(blockAtLine([{ start: 0, end: 2 }, { start: 0, end: 5 }], 0)).toBe(0);
+    expect(blockAtLine([{ start: 1, end: 10 }, { start: 8, end: 10 }], 8)).toBe(1);
+    expect(blockAtLine([{ start: 0, end: 0 }, { start: 5, end: 6 }], 0)).toBe(1);
+    expect(blockAtLine([{ start: Number.NaN, end: 2 }, { start: 5, end: 6 }], 0)).toBe(1);
+    expect(blockAtLine([{ start: 0, end: Number.NaN }, { start: 5, end: 6 }], 0)).toBe(1);
+    expect(blockAtLine([{ start: 0, end: 1 }, { start: 10, end: 11 }], 2)).toBe(0);
+    expect(blockAtLine([{ start: 0, end: 2 }], Number.NaN)).toBe(-1);
   });
 });

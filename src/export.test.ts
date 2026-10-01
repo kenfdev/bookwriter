@@ -344,5 +344,20 @@ describe("export", () => {
     expect(exported.files.some((file) => file.markdown.includes("Loose text."))).toBe(false);
     expect(exported.files.some((file) => file.markdown.includes("Gone."))).toBe(false);
     expect(exported.files[0].markdown).toContain("# Twenty kills per second. {-}");
+    expect(exported.files[3].markdown.startsWith('<p class="chapter-number">Chapter 1</p>')).toBe(true);
+  });
+
+  it("keeps a one-character front heading and a one-character body", () => {
+    const heading = node(
+      "section",
+      { id: "h", title: "H", synopsis: "", status: "draft", role: "front" },
+      "# B\n",
+    );
+    const body = node(
+      "section",
+      { id: "z", title: "Zed", synopsis: "", status: "draft", role: "body", unit: "text" },
+      "Z\n",
+    );
+    expect(exportBook([heading, body]).markdown).toBe("# H {-}\n\n## B {-}\n\n# Zed\n\nZ");
   });
 });
