@@ -334,6 +334,25 @@ export function closesFence(open: Fence, mark: { char: string; len: number; info
   return mark.char === open.char && mark.len >= open.len && mark.info.trim() === "";
 }
 
+/** Advance a fence one line. A fenced line is copied through unchanged. */
+export function stepFence(line: string, fence: Fence | null): { fence: Fence | null; fenced: boolean } {
+  const mark = fenceMark(line);
+  if (!mark) return { fence, fenced: fence !== null };
+  return fenceFromMark(fence, mark);
+}
+
+function fenceFromMark(
+  fence: Fence | null,
+  mark: { char: string; len: number; info: string },
+): { fence: Fence | null; fenced: boolean } {
+  if (!fence) return { fence: { char: mark.char, len: mark.len }, fenced: true };
+  return { fence: fenceAfterClose(fence, mark), fenced: true };
+}
+
+function fenceAfterClose(fence: Fence, mark: { char: string; len: number; info: string }): Fence | null {
+  return closesFence(fence, mark) ? null : fence;
+}
+
 /** Closed inline code spans on one line. An unmatched backtick is ordinary text. */
 export function codeSpanRanges(line: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];

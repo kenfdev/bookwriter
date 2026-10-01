@@ -15,13 +15,12 @@ import yaml from "highlight.js/lib/languages/yaml";
 import { divisionOpener, transformBody } from "./export";
 import {
   clampHeadingLevel,
-  closesFence,
   codeSpanRanges,
   divisions,
   effectiveFront,
-  fenceMark,
   insideSpan,
   startsNewPage,
+  stepFence,
   type Division,
   type Fence,
   type TreeNode,
@@ -141,16 +140,6 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-type FenceStep = { fence: Fence | null; skipped: boolean };
-
-function fenceAfter(line: string, fence: Fence | null): FenceStep {
-  const mark = fenceMark(line);
-  if (!mark) return { fence, skipped: fence !== null };
-  if (!fence) return { fence: { char: mark.char, len: mark.len }, skipped: true };
-  if (closesFence(fence, mark)) return { fence: null, skipped: true };
-  return { fence, skipped: true };
-}
-
 function recordInlineNote(content: string, count: { n: number }, notes: string[]): string {
   count.n += 1;
   const label = `__inline_${count.n}`;
@@ -180,9 +169,9 @@ function expandInlineNotes(body: string): { text: string; warnings: string[] } {
   let fence: Fence | null = null;
 
   for (const line of body.split("\n")) {
-    const step = fenceAfter(line, fence);
+    const step = stepFence(line, fence);
     fence = step.fence;
-    out.push(step.skipped ? line : replaceInlineNotes(line, count, notes));
+    out.push(step.fenced ? line : replaceInlineNotes(line, count, notes));
   }
   if (fence) warnings.push("Unclosed code fence.");
   return { text: appendDefinedNotes(out.join("\n"), notes), warnings };
@@ -209,9 +198,9 @@ function missingNotes(body: string): string[] {
   const referenced: string[] = [];
   let fence: Fence | null = null;
   for (const line of body.split("\n")) {
-    const step = fenceAfter(line, fence);
+    const step = stepFence(line, fence);
     fence = step.fence;
-    if (!step.skipped) noteLabels(line, defined, referenced);
+    if (!step.fenced) noteLabels(line, defined, referenced);
   }
   return referenced.filter((label) => !defined.has(label));
 }

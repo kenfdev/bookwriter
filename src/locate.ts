@@ -44,15 +44,16 @@ function laterStart(blocks: LineBlock[], index: number, best: number): boolean {
   return blocks[index].start >= blocks[best].start;
 }
 
-function betterSpan(span: number, bestSpan: number, later: boolean): boolean {
-  if (span < bestSpan) return true;
-  return span === bestSpan && later;
+/** A smaller measure wins. A tie goes to the later block. */
+function preferSmaller(value: number, best: number, later: boolean): boolean {
+  if (value !== best) return value < best;
+  return later;
 }
 
 function considerCover(blocks: LineBlock[], index: number, line: number, tight: number, tightSpan: number): number {
   const span = finiteSpan(blocks[index]);
   if (span === null || !coversLine(blocks[index], line)) return tight;
-  if (tight < 0 || betterSpan(span, tightSpan, laterStart(blocks, index, tight))) return index;
+  if (tight < 0 || preferSmaller(span, tightSpan, laterStart(blocks, index, tight))) return index;
   return tight;
 }
 
@@ -73,16 +74,11 @@ function distanceTo(block: LineBlock, line: number): number {
   return line - (block.end - 1);
 }
 
-function nearer(dist: number, bestDist: number, later: boolean): boolean {
-  if (dist < bestDist) return true;
-  return dist === bestDist && later;
-}
-
 function considerNearest(blocks: LineBlock[], index: number, line: number, nearest: number, nearestDist: number): number {
   if (finiteSpan(blocks[index]) === null) return nearest;
   const dist = distanceTo(blocks[index], line);
   const later = nearest >= 0 && laterStart(blocks, index, nearest);
-  if (nearest < 0 || nearer(dist, nearestDist, later)) return index;
+  if (nearest < 0 || preferSmaller(dist, nearestDist, later)) return index;
   return nearest;
 }
 

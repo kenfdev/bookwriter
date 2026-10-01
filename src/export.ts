@@ -1,14 +1,13 @@
 import {
   clampHeadingLevel,
-  closesFence,
   codeSpanRanges,
   divisionLabel,
   divisions,
   effectiveFront,
   effectiveUnit,
-  fenceMark,
   insideSpan,
   startsNewPage,
+  stepFence,
   type Division,
   type Fence,
   type TreeNode,
@@ -33,16 +32,6 @@ function prefixFootnotes(line: string, sectionId: string): string {
     if (insideSpan(offset, spans)) return match;
     return `[^${sectionId}-${label}]`;
   });
-}
-
-type FenceStep = { fence: Fence | null; copy: boolean };
-
-function stepFence(line: string, fence: Fence | null): FenceStep {
-  const mark = fenceMark(line);
-  if (!mark) return { fence, copy: fence !== null };
-  if (!fence) return { fence: { char: mark.char, len: mark.len }, copy: true };
-  if (closesFence(fence, mark)) return { fence: null, copy: true };
-  return { fence, copy: true };
 }
 
 function unnumbered(text: string): string {
@@ -80,7 +69,7 @@ export function transformBody(body: string, options: TransformOptions): Transfor
   for (const line of body.split("\n")) {
     const stepped = stepFence(line, fence);
     fence = stepped.fence;
-    if (stepped.copy) {
+    if (stepped.fenced) {
       out.push(line);
       continue;
     }

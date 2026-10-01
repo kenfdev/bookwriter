@@ -1357,20 +1357,30 @@ function bookParent(): string | undefined {
 
 async function exportManuscript(): Promise<void> {
   if (!book) return;
-  await writeManuscriptExport();
+  await writeFileExport("Export manuscript", "md", "Markdown", writeMarkdownExport);
 }
 
-async function writeManuscriptExport(): Promise<void> {
+async function flushedBook(): Promise<Book> {
   await flush();
   const loaded = await loadBook(fs, book!.root);
   book = loaded;
+  return loaded;
+}
+
+async function writeFileExport(
+  title: string,
+  extension: string,
+  label: string,
+  write: (path: string) => Promise<void>,
+): Promise<void> {
+  const loaded = await flushedBook();
   const destination = await save({
-    title: "Export manuscript",
-    defaultPath: joinPath(loaded.root, `${exportStem(loaded.title)}.md`),
-    filters: [{ name: "Markdown", extensions: ["md"] }],
+    title,
+    defaultPath: joinPath(loaded.root, `${exportStem(loaded.title)}.${extension}`),
+    filters: [{ name: label, extensions: [extension] }],
   });
   if (typeof destination !== "string") return;
-  await writeMarkdownExport(destination);
+  await write(destination);
 }
 
 function exportStem(title: string): string {
@@ -1399,24 +1409,11 @@ async function exportPdfManuscript(): Promise<void> {
 
 async function safePdfExport(): Promise<void> {
   try {
-    await writePdfExport();
+    await writeFileExport("Export PDF", "pdf", "PDF", writePdfFile);
   } catch (error) {
     showWarnings([`PDF export failed: ${String(error)}`]);
     saveState.textContent = "Export failed";
   }
-}
-
-async function writePdfExport(): Promise<void> {
-  await flush();
-  const loaded = await loadBook(fs, book!.root);
-  book = loaded;
-  const destination = await save({
-    title: "Export PDF",
-    defaultPath: joinPath(loaded.root, `${exportStem(loaded.title)}.pdf`),
-    filters: [{ name: "PDF", extensions: ["pdf"] }],
-  });
-  if (typeof destination !== "string") return;
-  await writePdfFile(destination);
 }
 
 async function writePdfFile(destination: string): Promise<void> {
@@ -1441,9 +1438,7 @@ async function safeDocxExport(): Promise<void> {
 }
 
 async function writeDocxExport(): Promise<void> {
-  await flush();
-  const loaded = await loadBook(fs, book!.root);
-  book = loaded;
+  const loaded = await flushedBook();
   const directory = await pickDocxDirectory(loaded.root);
   if (typeof directory !== "string") return;
   await writeDocxFiles(directory);
@@ -2166,14 +2161,9 @@ function openReplace(): void {
   editor.dom.querySelector<HTMLInputElement>(".cm-search input[name=replace]")?.focus();
 }
 
-function goToNextMatch(): void {
+function goToMatch(direction: "next" | "previous"): void {
   if (!editing()) return;
-  stepMatch("next");
-}
-
-function goToPreviousMatch(): void {
-  if (!editing()) return;
-  stepMatch("previous");
+  stepMatch(direction);
 }
 
 function stepMatch(direction: "next" | "previous"): void {
@@ -2454,8 +2444,8 @@ async function installMenu(): Promise<void> {
           await PredefinedMenuItem.new({ item: "SelectAll" }),
           await PredefinedMenuItem.new({ item: "Separator" }),
           await MenuItem.new({ id: "find", text: "Find…", accelerator: "CmdOrCtrl+F", action: openFind }),
-          await MenuItem.new({ id: "find-next", text: "Find Next", accelerator: "CmdOrCtrl+G", action: goToNextMatch }),
-          await MenuItem.new({ id: "find-previous", text: "Find Previous", accelerator: "CmdOrCtrl+Shift+G", action: goToPreviousMatch }),
+          await MenuItem.new({ id: "find-next", text: "Find Next", accelerator: "CmdOrCtrl+G", action: () => goToMatch("next") }),
+          await MenuItem.new({ id: "find-previous", text: "Find Previous", accelerator: "CmdOrCtrl+Shift+G", action: () => goToMatch("previous") }),
           await MenuItem.new({ id: "replace", text: "Replace…", accelerator: "CmdOrCtrl+Alt+F", action: openReplace }),
         ],
       }),
