@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadBook } from "./book";
-import { exportBook } from "./export";
-import { nodeFs } from "./nodeFs";
-import { renderGroup } from "./preview";
+import { exportBook } from "../export/export";
+import { nodeFs } from "../nodeFs";
+import { renderGroup } from "../ui/preview";
 import { splitSpec, writeSpecBook } from "./specbook";
 
 describe("the spec as the book", () => {

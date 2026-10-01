@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { Fs } from "./book";
+import type { Fs } from "./internals/book";
 
 export function nodeFs(): Fs {
   return {

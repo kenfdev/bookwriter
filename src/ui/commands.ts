@@ -1,4 +1,4 @@
-import { closesFence, fenceMark, type Fence } from "./model";
+import { closesFence, fenceMark, type Fence } from "../internals/model";
 
 export type CommandId =
   | "emphasis"

@@ -2,9 +2,9 @@ import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { nodeFs } from "./nodeFs";
+import { nodeFs } from "../nodeFs";
 import { normalizePath, placePicture, relativeToBook, resolvePictureSources } from "./pictures";
-import { renderSection } from "./preview";
+import { renderSection } from "../ui/preview";
 import type { TreeNode } from "./model";
 
 function section(body: string): TreeNode {

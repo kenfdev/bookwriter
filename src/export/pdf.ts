@@ -1,10 +1,10 @@
 import MarkdownIt from "markdown-it";
 import footnote from "markdown-it-footnote";
-import type { Fs } from "./book";
+import type { Fs } from "../internals/book";
 import { CHAPTER_NUMBER_CLASS, PAGE_BREAK_CLASS, exportNoteGroups } from "./export";
-import type { TreeNode } from "./model";
-import { bookPicturePath } from "./pictures";
-import { joinPath } from "./path";
+import type { TreeNode } from "../internals/model";
+import { bookPicturePath } from "../internals/pictures";
+import { joinPath } from "../internals/path";
 import { encodeImage, type EncodeOptions, type PdfImage } from "./pdfimage";
 
 /**

@@ -12,7 +12,7 @@ import rust from "highlight.js/lib/languages/rust";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
-import { divisionOpener, transformBody } from "./export";
+import { divisionOpener, transformBody } from "../export/export";
 import {
   clampHeadingLevel,
   codeSpanRanges,
@@ -24,7 +24,7 @@ import {
   type Division,
   type Fence,
   type TreeNode,
-} from "./model";
+} from "../internals/model";
 
 hljs.registerLanguage("bash", bash);
 hljs.registerLanguage("sh", bash);

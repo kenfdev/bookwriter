@@ -1,6 +1,6 @@
 import { deflateSync, inflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { crc32, makeJpeg, makePng, makePngRaw, unascii85 } from "./imageFixtures";
+import { crc32, makeJpeg, makePng, makePngRaw, unascii85 } from "../imageFixtures";
 import { ascii85, encodeImage, parseJpeg, storedZlib } from "./pdfimage";
 
 describe("ascii85", () => {

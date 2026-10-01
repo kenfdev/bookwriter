@@ -2,10 +2,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { makeJpeg, makePng } from "./imageFixtures";
+import { makeJpeg, makePng } from "../imageFixtures";
 import { exportPdf, exportPdfWithPictures, expandTabs, loadPictures, markdownToPdf, pictureSources } from "./pdf";
-import { nodeFs } from "./nodeFs";
-import type { TreeNode } from "./model";
+import { nodeFs } from "../nodeFs";
+import type { TreeNode } from "../internals/model";
 
 function node(
   kind: TreeNode["kind"],

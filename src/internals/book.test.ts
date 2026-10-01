@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createNode, deleteNode, emptyTrash, loadBook, manuscriptNodes, moveNode, planMove, saveNode } from "./book";
-import { exportBook } from "./export";
+import { exportBook } from "../export/export";
 import { filePath, type TreeNode } from "./model";
-import { nodeFs } from "./nodeFs";
+import { nodeFs } from "../nodeFs";
 
 function tree(): TreeNode[] {
   const section = (id: string): TreeNode => ({

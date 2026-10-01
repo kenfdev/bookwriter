@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { DirEntry, Fs } from "./book";
+import type { DirEntry, Fs } from "../internals/book";
 
 export const tauriFs: Fs = {
   readText: (path) => invoke("read_text", { path }),

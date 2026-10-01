@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TreeNode } from "./model";
+import type { TreeNode } from "../internals/model";
 import { renderBook, renderGroup, renderSection } from "./preview";
 
 function section(body: string, role: TreeNode["header"]["role"] = "body"): TreeNode {

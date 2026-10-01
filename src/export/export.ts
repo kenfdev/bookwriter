@@ -11,7 +11,7 @@ import {
   type Division,
   type Fence,
   type TreeNode,
-} from "./model";
+} from "../internals/model";
 
 export type TransformOptions = {
   depth: number;

@@ -103,16 +103,16 @@ The body is Pandoc Markdown. A heading in the body is a subsection, written with
 | `usage.txt` | The text `--help` prints |
 | `bookwriter-spec.md` | Living spec |
 | `spec-book/` | The book opened when `bookwriter` is started with no directory |
-| `index.html`, `src/styles.css` | The window |
-| `src/main.ts` | Outline, editor, menus, preview scroll |
-| `src/model.ts` | Headers, units, part and chapter numbers |
-| `src/book.ts` | Load, save, create, delete, and reorder the tree |
-| `src/commands.ts` | The twelve markup commands |
-| `src/preview.ts` | Preview and reading view |
-| `src/export.ts` | Manuscript Markdown |
-| `src/pdf.ts`, `src/pdfimage.ts` | PDF |
-| `src/find.ts` | Whole-book find |
-| `src/pictures.ts` | Pictures under `images/` |
+| `index.html`, `src/main/styles.css` | The window |
+| `src/main/main.ts` | Outline, editor, menus, preview scroll |
+| `src/internals/model.ts` | Headers, units, part and chapter numbers |
+| `src/internals/book.ts` | Load, save, create, delete, and reorder the tree |
+| `src/ui/commands.ts` | The twelve markup commands |
+| `src/ui/preview.ts` | Preview and reading view |
+| `src/export/export.ts` | Manuscript Markdown |
+| `src/export/pdf.ts`, `src/export/pdfimage.ts` | PDF |
+| `src/ui/find.ts` | Whole-book find |
+| `src/internals/pictures.ts` | Pictures under `images/` |
 | `src-tauri/src/lib.rs` | Reads and writes the book folder |
 
 Tests are the `*.test.ts` files next to the source, and the tests at the bottom of `src-tauri/src/lib.rs`.

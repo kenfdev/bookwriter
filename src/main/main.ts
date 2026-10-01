@@ -21,21 +21,21 @@ import {
   saveNode,
   type Book,
   type DropZone,
-} from "./book";
-import { COMMANDS, applyCommand, latestLanguage, type CommandId, type MarkupCommand } from "./commands";
-import { exportBook, exportDocxFiles } from "./export";
-import { nextMatch, previousMatch, type FindHit, type FindPart } from "./find";
-import { exportPdfWithPictures } from "./pdf";
-import { rasterizePicture } from "./rasterize";
-import { formatAccelerator } from "./keys";
-import { blockAtLine, lineOffset, offsetFraction, scrollToSpot, sourceOffset } from "./locate";
-import { divisionLabel, divisions, effectiveUnit, findNode, nodeWordCount, slugify, UNITS, walk, type Division, type Header, type Status, type TreeNode, type Unit } from "./model";
-import { joinPath, parentPath } from "./path";
-import { PICTURE_EXTENSIONS, placePicture, resolvePictureSources } from "./pictures";
-import { renderBook, renderGroup, renderSection } from "./preview";
-import { clampPreviewWidth, previewWidthFromPointer } from "./split";
-import { allowBook, pandocDocx, startupBookPath, tauriFs } from "./tauriFs";
-import { dropRedo, emptyTrail, historyStep, noteVisit, redoVisit, undoVisit, type Trail } from "./trail";
+} from "../internals/book";
+import { COMMANDS, applyCommand, latestLanguage, type CommandId, type MarkupCommand } from "../ui/commands";
+import { exportBook, exportDocxFiles } from "../export/export";
+import { nextMatch, previousMatch, type FindHit, type FindPart } from "../ui/find";
+import { exportPdfWithPictures } from "../export/pdf";
+import { rasterizePicture } from "../ui/rasterize";
+import { formatAccelerator } from "../ui/keys";
+import { blockAtLine, lineOffset, offsetFraction, scrollToSpot, sourceOffset } from "../ui/locate";
+import { divisionLabel, divisions, effectiveUnit, findNode, nodeWordCount, slugify, UNITS, walk, type Division, type Header, type Status, type TreeNode, type Unit } from "../internals/model";
+import { joinPath, parentPath } from "../internals/path";
+import { PICTURE_EXTENSIONS, placePicture, resolvePictureSources } from "../internals/pictures";
+import { renderBook, renderGroup, renderSection } from "../ui/preview";
+import { clampPreviewWidth, previewWidthFromPointer } from "../ui/split";
+import { allowBook, pandocDocx, startupBookPath, tauriFs } from "../ui/tauriFs";
+import { dropRedo, emptyTrail, historyStep, noteVisit, redoVisit, undoVisit, type Trail } from "../ui/trail";
 
 const fs = tauriFs;
 const bookTitle = document.querySelector<HTMLInputElement>("#book-title")!;

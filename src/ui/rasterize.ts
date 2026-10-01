@@ -1,4 +1,4 @@
-import type { Raster } from "./pdfimage";
+import type { Raster } from "../export/pdfimage";
 
 /**
  * Decode a picture the PDF writer cannot read itself (GIF, WebP, TIFF where the webview

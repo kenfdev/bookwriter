@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { exportBook, exportDocxFiles, exportNoteGroups, transformBody } from "./export";
-import { parseSection, type TreeNode } from "./model";
+import { parseSection, type TreeNode } from "../internals/model";
 
 function node(
   kind: TreeNode["kind"],
