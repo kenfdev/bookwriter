@@ -83,11 +83,14 @@ function prefixLine(text: string, anchor: number, head: number, prefix: string):
   const start = lineStart(text, cursor);
   const next = text.slice(0, start) + prefix + text.slice(start);
   const shift = prefix.length;
-  return {
-    text: next,
-    anchor: clamp(next, anchor + (anchor >= start ? shift : 0)),
-    head: cursor + shift,
-  };
+  const placed = cursor + shift;
+  return { text: next, anchor: clamp(next, shiftedAnchor(anchor, start, shift)), head: placed };
+}
+
+/** The anchor moves with the prefix only when it sits on the prefixed line. */
+function shiftedAnchor(anchor: number, start: number, shift: number): number {
+  if (anchor >= start) return anchor + shift;
+  return anchor;
 }
 
 function ensureBlankBefore(text: string, index: number): { text: string; index: number } {

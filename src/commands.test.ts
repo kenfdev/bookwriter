@@ -57,12 +57,28 @@ describe("markup commands", () => {
     expect(heading.text).toBe("# hello\nnext");
     const quote = applyCommand("quotation", "line", 0, 0);
     expect(quote.text).toBe("> line");
+    expect(quote.anchor).toBe(2);
+    expect(quote.head).toBe(2);
     const item = applyCommand("bullet", "line", 2, 2);
     expect(item.text).toBe("- line");
     const numbered = applyCommand("numbered", "line", 0, 0);
     expect(numbered.text).toBe("1. line");
     const lower = applyCommand("lower-subsection", "line", 0, 0);
     expect(lower.text).toBe("## line");
+
+    const second = applyCommand("subsection", "hello\nnext", 7, 7);
+    expect(second.text).toBe("hello\n# next");
+    const onBreak = "ab\ncd";
+    const atBreak = onBreak.indexOf("\n");
+    expect(applyCommand("subsection", onBreak, atBreak, atBreak).text).toBe("# ab\ncd");
+  });
+
+  it("moves only the cursors that sit on the prefixed line", () => {
+    const text = "hello\nnext";
+    const edited = applyCommand("subsection", text, 0, 7);
+    expect(edited.text).toBe("hello\n# next");
+    expect(edited.anchor).toBe(0);
+    expect(edited.head).toBe(9);
   });
 
   it("inserts a fenced block using the latest language in the book", () => {
@@ -85,14 +101,23 @@ describe("markup commands", () => {
 
     const afterBlank = applyCommand("code-block", "See\n\nint x;", 5, 11, "java");
     expect(afterBlank.text).toBe("See\n\n```java\nint x;\n```\n\n");
+
+    const kept = applyCommand("code-block", "See\n\nint x;\nMore", 5, 11, "java");
+    expect(kept.text).toBe("See\n\n```java\nint x;\n```\n\n\nMore");
+
+    const one = applyCommand("code-block", "x", 0, 1, "java");
+    expect(one.text).toBe("\n```java\nx\n```\n\n");
+    expect(one.head).toBe(10);
+
+    const emptyNamed = applyCommand("code-block", "See", 3, 3, "java");
+    expect(emptyNamed.text).toBe("See\n\n```java\n\n```\n\n");
+    expect(emptyNamed.head).toBe(13);
   });
 
   it("adds the next footnote without renumbering the ones already there", () => {
     const text = "Hello [^1] there.\n\n[^1]: First.\n";
     const edited = applyCommand("footnote", text, text.length, text.length);
-    expect(edited.text.startsWith("Hello [^1] there.\n\n[^1]: First.\n")).toBe(true);
-    expect(edited.text).toContain("[^2]");
-    expect(edited.text.endsWith("[^2]: ")).toBe(true);
+    expect(edited.text).toBe("Hello [^1] there.\n\n[^1]: First.\n[^2]\n\n[^2]: ");
     expect(edited.head).toBe(edited.text.length);
   });
 });

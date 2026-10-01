@@ -46,4 +46,56 @@ describe("find across texts", () => {
     expect(nextMatch(parts, "naming", 0, query("[", { regexp: true }))).toBeNull();
     expect(previousMatch([], "naming", 0, query("cat"))).toBeNull();
   });
+
+  it("finds a match that starts at the first character", () => {
+    const one: FindPart[] = [{ id: "only", text: "cat sits\n" }];
+    const end = one[0].text.length;
+    expect(nextMatch(one, "only", end, query("cat"))).toEqual({ id: "only", from: 0, to: 3 });
+    expect(previousMatch(one, "only", end, query("cat"))).toEqual({ id: "only", from: 0, to: 3 });
+    expect(nextMatch(one, "missing", 4, query("cat"))).toEqual({ id: "only", from: 0, to: 3 });
+  });
+
+  it("leaves the match the cursor is sitting on", () => {
+    const text = "cat and cat";
+    const second = text.lastIndexOf("cat");
+    expect(previousMatch([{ id: "only", text }], "only", second, query("cat"))).toEqual({ id: "only", from: 0, to: 3 });
+  });
+
+  it("moves from the first text to a match at the start of a later one", () => {
+    const book: FindPart[] = [
+      { id: "preface", text: "cat in front\n" },
+      { id: "end", text: "cat in back\n" },
+    ];
+    expect(nextMatch(book, "preface", book[0].text.length, query("cat"))).toEqual({ id: "end", from: 0, to: 3 });
+  });
+
+  it("wraps to a match at the start of an earlier text", () => {
+    const book: FindPart[] = [
+      { id: "preface", text: "cat in front\n" },
+      { id: "end", text: "nothing here\n" },
+    ];
+    expect(nextMatch(book, "end", 0, query("cat"))).toEqual({ id: "preface", from: 0, to: 3 });
+    expect(previousMatch(book, "end", 0, query("cat"))).toEqual({ id: "preface", from: 0, to: 3 });
+  });
+
+  it("keeps searching when the last text has no match", () => {
+    const book: FindPart[] = [
+      { id: "open", text: "plain\n" },
+      { id: "middle", text: "cat here\n" },
+      { id: "last", text: "plain\n" },
+    ];
+    expect(previousMatch(book, "open", 0, query("cat"))).toEqual({ id: "middle", from: 0, to: 3 });
+  });
+
+  it("does not stay on an empty match at the cursor", () => {
+    const book: FindPart[] = [
+      { id: "open", text: "hello" },
+      { id: "next", text: "there" },
+    ];
+    expect(nextMatch(book, "open", book[0].text.length, query("$", { regexp: true }))).toEqual({
+      id: "next",
+      from: 5,
+      to: 5,
+    });
+  });
 });
