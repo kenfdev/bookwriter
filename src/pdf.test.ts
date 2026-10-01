@@ -116,6 +116,46 @@ describe("pdf export", () => {
     expect(followed.pages).toBe(4);
   });
 
+  it("prints front matter notes before the body and chapter notes at the end of that chapter", () => {
+    const intro = node("section", { id: "intro", title: "Introduction", unit: "text" }, "Intro body.[^1]\n\n[^1]: Intro note.\n");
+    const preface = node(
+      "group",
+      { id: "preface", title: "Preface", role: "front" },
+      "Preface body.[^1]\n\n[^1]: Front note.\n",
+      [intro],
+    );
+    const later = node("section", { id: "later", title: "Later", unit: "text" }, "After the note.\n");
+    const inside = node("section", { id: "inside", title: "Inside", unit: "text" }, "Inside text.[^2]\n\n[^2]: Inside note.\n");
+    const first = node(
+      "group",
+      { id: "one", title: "First", unit: "chapter" },
+      "First body.[^1]\n\n[^1]: First note.\n",
+      [inside, later],
+    );
+    const second = node("section", { id: "two", title: "Second", unit: "chapter" }, "Second body.[^7]\n\n[^7]: Second note.\n");
+    const part = node("group", { id: "part", title: "The Part", unit: "part" }, "Part opener.\n", [first, second]);
+    const texts = shown(exportPdf([preface, part], "Book").pdf).map((piece) => piece.text);
+    const at = (label: string) => {
+      const index = texts.findIndex((piece) => piece.includes(label));
+      expect(index, label).toBeGreaterThanOrEqual(0);
+      return index;
+    };
+    expect(at("Front note.")).toBeGreaterThan(at("Intro body."));
+    expect(at("Intro note.")).toBeGreaterThan(at("Front note."));
+    expect(at("Part opener.")).toBeGreaterThan(at("Intro note."));
+    expect(at("First body.")).toBeGreaterThan(at("Part opener."));
+    expect(at("First note.")).toBeGreaterThan(at("After the note."));
+    expect(at("Inside note.")).toBeGreaterThan(at("First note."));
+    expect(at("Second body.")).toBeGreaterThan(at("Inside note."));
+    expect(at("Second note.")).toBeGreaterThan(at("Second body."));
+    expect(texts.filter((piece) => piece === "Notes")).toHaveLength(3);
+    expect(texts.find((piece) => piece.includes("Preface body."))).toContain("[1]");
+    expect(texts.find((piece) => piece.includes("Intro body."))).toContain("[2]");
+    expect(texts.find((piece) => piece.includes("First body."))).toContain("[1]");
+    expect(texts.find((piece) => piece.includes("Inside text."))).toContain("[2]");
+    expect(texts.find((piece) => piece.includes("Second body."))).toContain("[1]");
+  });
+
   it("prints a footnote that sits in a heading", () => {
     const chapter = node(
       "section",

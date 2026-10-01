@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { exportBook, transformBody } from "./export";
+import { exportBook, exportNoteGroups, transformBody } from "./export";
 import { parseSection, type TreeNode } from "./model";
 
 function node(
@@ -113,6 +113,61 @@ describe("export", () => {
         '<div class="page-break"></div>\n\n# Note\n\nAside.',
       ].join("\n\n"),
     );
+  });
+
+  it("groups front matter together and each chapter together", () => {
+    const intro = node(
+      "section",
+      { id: "intro", title: "Introduction", synopsis: "", status: "draft", role: "body", unit: "text" },
+      "Intro.[^1]\n\n[^1]: Intro note.\n",
+    );
+    const preface = node(
+      "group",
+      { id: "preface", title: "Preface", synopsis: "", status: "draft", role: "front" },
+      "Preface.[^1]\n\n[^1]: Front note.\n",
+      [intro],
+    );
+    const later = node(
+      "section",
+      { id: "later", title: "Later", synopsis: "", status: "draft", role: "body", unit: "text" },
+      "After the note.\n",
+    );
+    const inside = node(
+      "section",
+      { id: "inside", title: "Inside", synopsis: "", status: "draft", role: "body", unit: "text" },
+      "Inside.[^2]\n\n[^2]: Inside note.\n",
+    );
+    const first = node(
+      "group",
+      { id: "one", title: "First", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      "First.[^1]\n\n[^1]: First note.\n",
+      [inside, later],
+    );
+    const second = node(
+      "section",
+      { id: "two", title: "Second", synopsis: "", status: "draft", role: "body", unit: "chapter" },
+      "Second.[^7]\n\n[^7]: Second note.\n",
+    );
+    const part = node(
+      "group",
+      { id: "part", title: "The Part", synopsis: "", status: "draft", role: "body", unit: "part" },
+      "Part opener.\n",
+      [first, second],
+    );
+    const nodes = [preface, part];
+    const exported = exportNoteGroups(nodes);
+    expect(exported.groups).toHaveLength(4);
+    expect(exported.groups[0]).toContain("Front note.");
+    expect(exported.groups[0]).toContain("Intro note.");
+    expect(exported.groups[0]).not.toContain("First note.");
+    expect(exported.groups[1]).toContain("Part opener.");
+    expect(exported.groups[1]).not.toContain("First note.");
+    expect(exported.groups[2]).toContain("First note.");
+    expect(exported.groups[2]).toContain("Inside note.");
+    expect(exported.groups[2]).toContain("After the note.");
+    expect(exported.groups[2]).not.toContain("Second note.");
+    expect(exported.groups[3]).toContain("Second note.");
+    expect(exportBook(nodes).markdown).toBe(exported.groups.join("\n\n"));
   });
 
   it("does not prefix a footnote written inside inline code", () => {

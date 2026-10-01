@@ -1,7 +1,7 @@
 import MarkdownIt from "markdown-it";
 import footnote from "markdown-it-footnote";
 import type { Fs } from "./book";
-import { CHAPTER_NUMBER_CLASS, PAGE_BREAK_CLASS, exportBook } from "./export";
+import { CHAPTER_NUMBER_CLASS, PAGE_BREAK_CLASS, exportNoteGroups } from "./export";
 import type { TreeNode } from "./model";
 import { bookPicturePath } from "./pictures";
 import { joinPath } from "./path";
@@ -1340,20 +1340,13 @@ function assemble(layout: Layout, title: string): string {
 
 /** Render Markdown to a PDF document held as an ASCII string. Pictures come from `pictures` (see `loadPictures`). */
 export function markdownToPdf(markdown: string, title = "", pictures?: Pictures): PdfResult {
-  const warnings: string[] = [];
-  const layout = new Layout();
-  layoutTokens(md.parse(markdown, {}), layout, warnings, pictures);
-  if (hasUnshownCharacter(markdown)) {
-    warnings.push("Some characters cannot be shown in the PDF and were replaced with ?.");
-  }
-  return { pdf: assemble(layout, title), pages: layout.pages.length, warnings };
+  return renderGroups([markdown], title, pictures);
 }
 
-/** The whole book as a PDF: the same manuscript the Markdown export writes. */
+/** The whole book as a PDF. Front matter and each chapter keep their own notes. */
 export function exportPdf(nodes: TreeNode[], title = "", pictures?: Pictures): PdfResult {
-  const exported = exportBook(nodes);
-  const rendered = markdownToPdf(exported.markdown, title, pictures);
-  return { ...rendered, warnings: [...exported.warnings, ...rendered.warnings] };
+  const exported = exportNoteGroups(nodes);
+  return mergeWarnings(renderGroups(exported.groups, title, pictures), exported.warnings);
 }
 
 /** Like `exportPdf`, but first reads the book's pictures from `root` through `fs`. */
@@ -1364,8 +1357,31 @@ export async function exportPdfWithPictures(
   root: string,
   options: EncodeOptions = {},
 ): Promise<PdfResult> {
-  const exported = exportBook(nodes);
-  const pictures = await loadPictures(fs, root, exported.markdown, options);
-  const rendered = markdownToPdf(exported.markdown, title, pictures);
-  return { ...rendered, warnings: [...exported.warnings, ...rendered.warnings] };
+  const exported = exportNoteGroups(nodes);
+  const pictures = await loadPictures(fs, root, exported.groups.join("\n\n"), options);
+  return mergeWarnings(renderGroups(exported.groups, title, pictures), exported.warnings);
+}
+
+function renderGroups(groups: string[], title: string, pictures?: Pictures): PdfResult {
+  const warnings: string[] = [];
+  const layout = new Layout();
+  layoutTokens(parseGroups(groups), layout, warnings, pictures);
+  noteUnshown(groups.join("\n\n"), warnings);
+  return { pdf: assemble(layout, title), pages: layout.pages.length, warnings };
+}
+
+function parseGroups(groups: string[]): MdToken[] {
+  const tokens: MdToken[] = [];
+  for (const markdown of groups) tokens.push(...md.parse(markdown, {}));
+  return tokens;
+}
+
+function noteUnshown(markdown: string, warnings: string[]): void {
+  if (hasUnshownCharacter(markdown)) {
+    warnings.push("Some characters cannot be shown in the PDF and were replaced with ?.");
+  }
+}
+
+function mergeWarnings(rendered: PdfResult, warnings: string[]): PdfResult {
+  return { ...rendered, warnings: [...warnings, ...rendered.warnings] };
 }

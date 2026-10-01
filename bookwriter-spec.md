@@ -219,6 +219,8 @@ A front-matter heading is emitted with Pandoc's unnumbered marker: `# Preface {-
 
 Footnote labels are prefixed with the section id during export, on both the reference and the definition. `[^1]` in the section whose id is `inward` is written as `[^inward-1]`. Inline notes have no label and need no prefix. Pandoc numbers the notes in the finished book. The labels in the source are not the numbers a reader sees.
 
+Bookwriter's PDF prints the front matter's notes at the end of the front matter, and each chapter's notes at the end of that chapter, including the notes from the sections inside it. A part's own notes, and the notes of a section that is not inside a chapter, are printed at the end of that part or section. Each of those groups is numbered from 1 in the order the notes appear.
+
 Export of the example above:
 
 ````markdown

@@ -5,6 +5,7 @@ import {
   divisionLabel,
   divisions,
   effectiveFront,
+  effectiveUnit,
   fenceMark,
   insideSpan,
   startsNewPage,
@@ -121,42 +122,165 @@ function titleHeading(
   return `${divisionOpener(division)}\n\n${heading}`;
 }
 
-function exportNode(
+type Piece = { key: string; markdown: string };
+type NoteGroup = { key: string; parts: string[] };
+
+/**
+ * Manuscript Markdown split where notes are printed.
+ * Front matter is one group. Each chapter, including the sections inside it, is one group.
+ * Anything else keeps its own notes.
+ */
+export function exportNoteGroups(nodes: TreeNode[]): { groups: string[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const pieces = collectPieces(withoutTrash(nodes), [], warnings, divisions(nodes), false);
+  return { groups: packGroups(pieces), warnings };
+}
+
+export function exportBook(nodes: TreeNode[]): { markdown: string; warnings: string[] } {
+  const exported = exportNoteGroups(nodes);
+  return { markdown: exported.groups.join("\n\n"), warnings: exported.warnings };
+}
+
+function withoutTrash(nodes: TreeNode[]): TreeNode[] {
+  return nodes.filter(keptNode);
+}
+
+function keptNode(node: TreeNode): boolean {
+  return node.header.id !== "trash";
+}
+
+function collectPieces(
+  nodes: TreeNode[],
+  ancestors: TreeNode[],
+  warnings: string[],
+  numbered: Map<string, Division>,
+  followed: boolean,
+): Piece[] {
+  const pieces: Piece[] = [];
+  nodes.forEach((node, index) => addNode(pieces, node, ancestors, warnings, numbered, followed || index > 0));
+  return pieces;
+}
+
+function addNode(
+  pieces: Piece[],
+  node: TreeNode,
+  ancestors: TreeNode[],
+  warnings: string[],
+  numbered: Map<string, Division>,
+  followed: boolean,
+): void {
+  pieces.push(ownPiece(node, ancestors, warnings, numbered, followed));
+  addChildren(pieces, node, ancestors, warnings, numbered);
+}
+
+function addChildren(
+  pieces: Piece[],
+  node: TreeNode,
+  ancestors: TreeNode[],
+  warnings: string[],
+  numbered: Map<string, Division>,
+): void {
+  pieces.push(...collectPieces(node.children, [...ancestors, node], warnings, numbered, true));
+}
+
+function ownPiece(
+  node: TreeNode,
+  ancestors: TreeNode[],
+  warnings: string[],
+  numbered: Map<string, Division>,
+  followed: boolean,
+): Piece {
+  return { key: noteKey(node, ancestors), markdown: exportOwn(node, ancestors, warnings, numbered, followed) };
+}
+
+function noteKey(node: TreeNode, ancestors: TreeNode[]): string {
+  if (isFront(node, ancestors)) return "front";
+  return chapterOrNode(node, ancestors);
+}
+
+function isFront(node: TreeNode, ancestors: TreeNode[]): boolean {
+  return effectiveFront(node.header.role, ancestors.map(headerOf));
+}
+
+function headerOf(node: TreeNode): TreeNode["header"] {
+  return node.header;
+}
+
+function chapterOrNode(node: TreeNode, ancestors: TreeNode[]): string {
+  const owner = chapterOwner(node, ancestors);
+  if (owner) return `chapter:${owner}`;
+  return `node:${node.header.id}`;
+}
+
+function chapterOwner(node: TreeNode, ancestors: TreeNode[]): string | null {
+  if (isChapter(node)) return node.header.id;
+  return ancestorChapter(ancestors);
+}
+
+function isChapter(node: TreeNode): boolean {
+  return effectiveUnit(node) === "chapter";
+}
+
+function ancestorChapter(ancestors: TreeNode[]): string | null {
+  return [...ancestors].reverse().find(isChapter)?.header.id ?? null;
+}
+
+function exportOwn(
   node: TreeNode,
   ancestors: TreeNode[],
   warnings: string[],
   numbered: Map<string, Division>,
   followed: boolean,
 ): string {
-  const front = effectiveFront(
-    node.header.role,
-    ancestors.map((ancestor) => ancestor.header),
-  );
-  const depth = ancestors.length + 1;
-  const heading = titleHeading(depth, node.header.title, front, warnings, numbered.get(node.header.id));
-  const transformed = transformBody(node.body, {
-    depth,
-    sectionId: node.header.id,
-    front,
-  });
-  warnings.push(...transformed.warnings);
-  const body = transformed.text.replace(/\n+$/, "");
-  const own = body.length > 0 ? `${heading}\n\n${body}` : heading;
-  const parts = [own];
-  for (const child of node.children) {
-    parts.push(exportNode(child, [...ancestors, node], warnings, numbered, true));
-  }
-  const text = parts.join("\n\n");
-  if (startsNewPage(node) && followed) return `${pageBreak()}\n\n${text}`;
+  const text = nodeText(node, ancestors, warnings, numbered);
+  if (opensPage(node, followed)) return `${pageBreak()}\n\n${text}`;
   return text;
 }
 
-export function exportBook(nodes: TreeNode[]): { markdown: string; warnings: string[] } {
-  const warnings: string[] = [];
-  const numbered = divisions(nodes);
-  const markdown = nodes
-    .filter((node) => node.header.id !== "trash")
-    .map((node, index) => exportNode(node, [], warnings, numbered, index > 0))
-    .join("\n\n");
-  return { markdown, warnings };
+function opensPage(node: TreeNode, followed: boolean): boolean {
+  return startsNewPage(node) && followed;
+}
+
+function nodeText(
+  node: TreeNode,
+  ancestors: TreeNode[],
+  warnings: string[],
+  numbered: Map<string, Division>,
+): string {
+  const front = isFront(node, ancestors);
+  const depth = ancestors.length + 1;
+  const heading = titleHeading(depth, node.header.title, front, warnings, numbered.get(node.header.id));
+  const transformed = transformBody(node.body, { depth, sectionId: node.header.id, front });
+  warnings.push(...transformed.warnings);
+  return joinBody(heading, transformed.text);
+}
+
+function joinBody(heading: string, text: string): string {
+  const body = text.replace(/\n+$/, "");
+  if (body.length > 0) return `${heading}\n\n${body}`;
+  return heading;
+}
+
+function packGroups(pieces: Piece[]): string[] {
+  const groups: NoteGroup[] = [];
+  for (const piece of pieces) appendPiece(groups, piece);
+  return groups.map(joinGroup);
+}
+
+function appendPiece(groups: NoteGroup[], piece: Piece): void {
+  const group = lastGroup(groups);
+  if (extendsGroup(group, piece.key)) group.parts.push(piece.markdown);
+  else groups.push({ key: piece.key, parts: [piece.markdown] });
+}
+
+function lastGroup(groups: NoteGroup[]): NoteGroup | undefined {
+  return groups[groups.length - 1];
+}
+
+function extendsGroup(group: NoteGroup | undefined, key: string): group is NoteGroup {
+  return group != null && group.key === key;
+}
+
+function joinGroup(group: NoteGroup): string {
+  return group.parts.join("\n\n");
 }
