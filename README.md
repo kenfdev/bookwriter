@@ -27,7 +27,7 @@ bookwriter --help prints this usage.
 With no directory, bookwriter opens spec-book/.
 ```
 
-`bw --help` and `bookwriter --help` print that usage and exit. `bw` with no directory, or with a path that is not a directory, prints the same usage and exits with status 64.
+`bw --help` and `bookwriter --help` print that usage and exit. `bw` with no directory, or with a path that is not a directory, prints the same usage and exits with status 64. `bw` opens the book from a Bookwriter app bundle, so the Dock and the app switcher show the book icon.
 
 Inside the window:
 
