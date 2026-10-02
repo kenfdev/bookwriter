@@ -6,11 +6,18 @@ The rules of the manuscript live in `bookwriter-spec.md`. This file is how you r
 
 ## Usage
 
-Install once, from this directory:
+Clone the repository, install the dependencies, and link `bw` onto your `PATH`:
 
 ```
+git clone git@github.com:unclebob/bookwriter.git
+cd bookwriter
 npm install
+ln -s "$(pwd)/bw" ~/cmds/bw
 ```
+
+`~/cmds` is one directory already on `PATH`. Any other directory on `PATH` works the same way. The link points at `bw` in the clone. The script resolves that link and uses the clone as its home.
+
+The machine needs `zsh`, Node and npm, Rust (`cargo`), and the Xcode Command Line Tools.
 
 Then:
 
