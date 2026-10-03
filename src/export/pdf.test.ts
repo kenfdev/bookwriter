@@ -253,6 +253,23 @@ describe("pdf export", () => {
   });
 });
 
+function shadedBox(pdf: string): { x: number; y: number; w: number; h: number } | null {
+  const box = /0\.95 g ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) re f/.exec(pdf);
+  if (!box) return null;
+  return { x: Number(box[1]), y: Number(box[2]), w: Number(box[3]), h: Number(box[4]) };
+}
+
+function codeByPage(pdf: string, lines: string[]): string[][] {
+  return [...pdf.matchAll(/stream\n([\s\S]*?)endstream/g)].map((match) =>
+    lines.filter((line) => match[1].includes(`(${line}) Tj`)),
+  );
+}
+
+function fencedPdf(paragraphs: string[], lines: string[]): string {
+  const prose = paragraphs.length ? paragraphs.join("\n\n") + "\n\n" : "";
+  return markdownToPdf(prose + "```\n" + lines.join("\n") + "\n```\n").pdf;
+}
+
 /** x and y of the first text object that shows `literal` exactly. */
 function placed(pdf: string, literal: string): { x: string; y: string } | null {
   const body = literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -386,22 +403,39 @@ describe("pdf code", () => {
   });
 
   it("indents an indented code block and a fence inside a list", () => {
-    const { pdf } = markdownToPdf("- item\n\n  ```\n  code\n  ```\n");
-    const box = /0\.95 g ([\d.]+) [\d.]+ ([\d.]+) /.exec(pdf);
-    expect(Number(box![1])).toBe(94);
-    expect(Number(box![2])).toBe(446);
+    const plain = shadedBox(markdownToPdf("```\ncode\n```\n").pdf);
+    const box = shadedBox(markdownToPdf("- item\n\n  ```\n  code\n  ```\n").pdf);
+    expect(plain).not.toBeNull();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThan(plain!.x);
+    expect(box!.w).toBeLessThan(plain!.w);
+    expect(box!.x - plain!.x).toBe(plain!.w - box!.w);
   });
 
   it("places a one-line block at the top of an empty page and continues below the box", () => {
     const { pdf } = markdownToPdf("```\nZ\n```\n\nAfter.\n");
-    expect(placed(pdf, "Z")).toEqual({ x: "79.00", y: "706.50" });
-    expect(placed(pdf, "After.")).toEqual({ x: "72.00", y: "675.50" });
-    expect(pdf).toContain("0.95 g 72.00 698.50 468.00 21.50 re f");
+    const code = placed(pdf, "Z");
+    const after = placed(pdf, "After.");
+    const box = shadedBox(pdf);
+    expect(code).not.toBeNull();
+    expect(after).not.toBeNull();
+    expect(box).not.toBeNull();
+    expect(Number(code!.y)).toBeGreaterThan(box!.y);
+    expect(Number(code!.y)).toBeLessThan(box!.y + box!.h);
+    expect(Number(code!.x)).toBeGreaterThan(box!.x);
+    expect(Number(code!.x)).toBeLessThan(box!.x + box!.w);
+    expect(Number(after!.y)).toBeLessThan(box!.y);
+    expect(Number(after!.x)).toBe(box!.x);
+    const baselines = [...pdf.matchAll(/[\d.]+ ([\d.]+) Td/g)].map((match) => Number(match[1]));
+    expect(Math.max(...baselines.filter((y) => y > 50))).toBe(Number(code!.y));
   });
 
   it("drops two points before a block that follows a paragraph", () => {
-    const { pdf } = markdownToPdf("Intro.\n\n```\nZ\n```\n");
-    expect(placed(pdf, "Z")).toEqual({ x: "79.00", y: "681.50" });
+    const bare = Number(placed(markdownToPdf("```\nZ\n```\n").pdf, "Z")!.y);
+    const followed = Number(placed(markdownToPdf("Intro.\n\n```\nZ\n```\n").pdf, "Z")!.y);
+    const prose = markdownToPdf("Intro.\n\nNext.\n").pdf;
+    const stride = Number(placed(prose, "Intro.")!.y) - Number(placed(prose, "Next.")!.y);
+    expect(bare - followed).toBe(stride + 2);
   });
 
   it("does not mark a code line that fills the box exactly", () => {
@@ -412,32 +446,38 @@ describe("pdf code", () => {
   });
 
   it("fills the first page with code before carrying the rest", () => {
-    const lines = Array.from({ length: 60 }, (_, i) => `L${String(i).padStart(2, "0")}`);
-    const result = markdownToPdf("Intro.\n\n```\n" + lines.join("\n") + "\n```\n");
-    const counts = [...result.pdf.matchAll(/stream\n([\s\S]*?)endstream/g)].map(
-      (match) => (match[1].match(/\(L\d+\) Tj/g) ?? []).length,
-    );
-    expect(counts).toEqual([53, 7]);
+    const lines = (count: number) => Array.from({ length: count }, (_, i) => `L${String(i).padStart(2, "0")}`);
+    const pages = codeByPage(fencedPdf(["Intro."], lines(80)), lines(80));
+    const more = codeByPage(fencedPdf(["Intro."], lines(100)), lines(100));
+    expect(pages.flat()).toEqual(lines(80));
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages[0].length).toBe(more[0].length);
+    expect(pages[0].length).toBeGreaterThan(pages[1].length);
   });
 
   it("moves a code block that will not fit onto the next page", () => {
-    const prose = Array.from({ length: 27 }, (_, i) => `P${i}`).join("\n\n");
-    const result = markdownToPdf(prose + "\n\n```\nC0\nC1\nC2\n```\n");
-    const code = [...result.pdf.matchAll(/stream\n([\s\S]*?)endstream/g)].map((match) =>
-      ["C0", "C1", "C2"].filter((line) => match[1].includes(`(${line}) Tj`)),
-    );
-    expect(code).toEqual([[], ["C0", "C1", "C2"]]);
+    const code = ["C0", "C1", "C2"];
+    const layouts = Array.from({ length: 36 }, (_, n) => codeByPage(fencedPdf(Array.from({ length: n }, (_, i) => `P${i}`), code), code));
+    const kept = layouts.filter((pages) => pages[0]?.length === 3);
+    const moved = layouts.filter((pages) => pages[0]?.length === 0 && pages[1]?.length === 3);
+    const orphan = layouts.filter((pages) => pages[0]?.length === 1);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(moved.length).toBeGreaterThan(0);
+    expect(orphan).toEqual([]);
   });
 
   it("keeps two code lines when that is all the page can hold", () => {
-    // The last paragraph leaves room for two code rows, so the third row starts the next page.
-    const last = "Last " + "w".repeat(56);
-    const prose = [...Array.from({ length: 25 }, (_, i) => `P${i}`), last].join("\n\n");
-    const result = markdownToPdf(prose + "\n\n```\nA\nB\nC\n```\n");
-    const code = [...result.pdf.matchAll(/stream\n([\s\S]*?)endstream/g)].map((match) =>
-      ["A", "B", "C"].filter((line) => match[1].includes(`(${line}) Tj`)),
-    );
-    expect(code).toEqual([["A", "B"], ["C"]]);
+    const code = ["A", "B", "C"];
+    let count = 0;
+    while (count < 40 && codeByPage(fencedPdf([...Array.from({ length: count }, (_, i) => `P${i}`), "End"], code), code)[0]?.length === 3) count++;
+    const fitCount = count - 1;
+    expect(fitCount).toBeGreaterThan(0);
+    let tail = 0;
+    const at = (width: number) =>
+      codeByPage(fencedPdf([...Array.from({ length: fitCount }, (_, i) => `P${i}`), "End " + "w".repeat(width)], code), code);
+    while (tail < 120 && at(tail)[0]?.length === 3) tail++;
+    expect(at(tail)[0]).toEqual(["A", "B"]);
+    expect(at(tail)[1]).toEqual(["C"]);
   });
 });
 

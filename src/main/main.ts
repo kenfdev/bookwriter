@@ -893,8 +893,7 @@ function scrollPreviewLine(source: string, cursor: number): void {
 
 function blockSpan(block: HTMLElement): { start: number; end: number } {
   const start = Number(block.dataset.line);
-  const end = block.dataset.end === undefined ? start + 1 : Number(block.dataset.end);
-  return { start, end };
+  return { start, end: spanEnd(block, start) };
 }
 
 function placePreviewScroll(source: string, cursor: number, block: HTMLElement, span: { start: number; end: number }): void {
@@ -923,7 +922,7 @@ function paintWholeBook(): void {
   readingEl.hidden = false;
   const rendered = renderBook(manuscriptNodes(book!.nodes));
   readingEl.innerHTML = showPictures(rendered.html);
-  showWarnings([...(book!.warnings ?? []), ...rendered.warnings]);
+  showWarnings([...bookWarnings(), ...rendered.warnings]);
 }
 
 function paintSelectionReading(): void {
