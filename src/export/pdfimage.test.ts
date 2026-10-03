@@ -193,6 +193,28 @@ describe("png", () => {
     await expect(encodeImage(new Uint8Array(0))).rejects.toThrow();
   });
 
+  it("rejects a PNG with no pixels, a bad colour layout, or no data", async () => {
+    await expect(encodeImage(makePng({ width: 0, height: 1, colorType: 2, rows: [[]] }))).rejects.toThrow("no picture data");
+    await expect(encodeImage(makePng({ width: 1, height: 0, colorType: 2, rows: [] }))).rejects.toThrow("no picture data");
+    await expect(encodeImage(makePng({ width: 1, height: 1, colorType: 7, rows: [[0]] }))).rejects.toThrow("colour layout");
+    await expect(encodeImage(makePng({ width: 1, height: 1, colorType: 2, depth: 4, rows: [[1, 2, 3]] }))).rejects.toThrow("colour layout");
+    const interlaced = makePng({ width: 1, height: 1, colorType: 2, rows: [[1, 2, 3]] });
+    interlaced[28] = 2;
+    await expect(encodeImage(interlaced)).rejects.toThrow("this PNG layout is not supported");
+    await expect(encodeImage(makePng({ width: 1, height: 1, colorType: 3, depth: 8, rows: [[0]] }))).rejects.toThrow("palette is missing");
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(1, 0);
+    header.writeUInt32BE(1, 4);
+    header[8] = 8;
+    header[9] = 2;
+    const noData = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk("IHDR", header),
+      pngChunk("IEND", Buffer.alloc(0)),
+    ]);
+    await expect(encodeImage(noData)).rejects.toThrow("no picture data");
+  });
+
   it("uses a runtime decoder for other formats when one is given", async () => {
     const rgba = [1, 2, 3, 255, 4, 5, 6, 0];
     const image = await encodeImage(Buffer.from("GIF89a....."), { rasterize: async () => ({ width: 2, height: 1, rgba }) });

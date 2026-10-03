@@ -28,4 +28,8 @@ describe("preview separator", () => {
   it("leaves a stored width alone before the workspace has a size", () => {
     expect(clampPreviewWidth(0, 420, min)).toBe(420);
   });
+
+  it("uses a one-pixel workspace as the only width that fits", () => {
+    expect(clampPreviewWidth(1, 50, 10)).toBe(1);
+  });
 });

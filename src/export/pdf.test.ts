@@ -387,12 +387,68 @@ describe("pdf code", () => {
 
   it("indents an indented code block and a fence inside a list", () => {
     const { pdf } = markdownToPdf("- item\n\n  ```\n  code\n  ```\n");
-    const box = /0\.95 g ([\d.]+) /.exec(pdf);
-    expect(Number(box![1])).toBeGreaterThan(72);
+    const box = /0\.95 g ([\d.]+) [\d.]+ ([\d.]+) /.exec(pdf);
+    expect(Number(box![1])).toBe(94);
+    expect(Number(box![2])).toBe(446);
+  });
+
+  it("places a one-line block at the top of an empty page and continues below the box", () => {
+    const { pdf } = markdownToPdf("```\nZ\n```\n\nAfter.\n");
+    expect(placed(pdf, "Z")).toEqual({ x: "79.00", y: "706.50" });
+    expect(placed(pdf, "After.")).toEqual({ x: "72.00", y: "675.50" });
+    expect(pdf).toContain("0.95 g 72.00 698.50 468.00 21.50 re f");
+  });
+
+  it("drops two points before a block that follows a paragraph", () => {
+    const { pdf } = markdownToPdf("Intro.\n\n```\nZ\n```\n");
+    expect(placed(pdf, "Z")).toEqual({ x: "79.00", y: "681.50" });
+  });
+
+  it("does not mark a code line that fills the box exactly", () => {
+    const line = "a".repeat(83);
+    const { pdf } = markdownToPdf("```\n" + line + "\n```\n");
+    expect(shown(pdf).filter((piece) => piece.font === "F3").map((piece) => piece.text)).toEqual([line]);
+    expect(pdf).not.toContain("0.45 g");
+  });
+
+  it("fills the first page with code before carrying the rest", () => {
+    const lines = Array.from({ length: 60 }, (_, i) => `L${String(i).padStart(2, "0")}`);
+    const result = markdownToPdf("Intro.\n\n```\n" + lines.join("\n") + "\n```\n");
+    const counts = [...result.pdf.matchAll(/stream\n([\s\S]*?)endstream/g)].map(
+      (match) => (match[1].match(/\(L\d+\) Tj/g) ?? []).length,
+    );
+    expect(counts).toEqual([53, 7]);
+  });
+
+  it("moves a code block that will not fit onto the next page", () => {
+    const prose = Array.from({ length: 27 }, (_, i) => `P${i}`).join("\n\n");
+    const result = markdownToPdf(prose + "\n\n```\nC0\nC1\nC2\n```\n");
+    const code = [...result.pdf.matchAll(/stream\n([\s\S]*?)endstream/g)].map((match) =>
+      ["C0", "C1", "C2"].filter((line) => match[1].includes(`(${line}) Tj`)),
+    );
+    expect(code).toEqual([[], ["C0", "C1", "C2"]]);
+  });
+
+  it("keeps two code lines when that is all the page can hold", () => {
+    // The last paragraph leaves room for two code rows, so the third row starts the next page.
+    const last = "Last " + "w".repeat(56);
+    const prose = [...Array.from({ length: 25 }, (_, i) => `P${i}`), last].join("\n\n");
+    const result = markdownToPdf(prose + "\n\n```\nA\nB\nC\n```\n");
+    const code = [...result.pdf.matchAll(/stream\n([\s\S]*?)endstream/g)].map((match) =>
+      ["A", "B", "C"].filter((line) => match[1].includes(`(${line}) Tj`)),
+    );
+    expect(code).toEqual([["A", "B"], ["C"]]);
   });
 });
 
 describe("pdf pictures", () => {
+  it("shows a picture in a heading as its alt text", () => {
+    const { pdf } = markdownToPdf("## See ![Dot](images/a.png)\n\n## Empty ![](images/b.png)\n");
+    const runs = shown(pdf).map((piece) => `${piece.font} ${piece.text}`);
+    expect(runs).toContain("F4 [Dot]");
+    expect(runs).toContain("F4 [image]");
+  });
+
   it("finds the pictures a text refers to", () => {
     expect(pictureSources("![a](images/a.png)\n\ntext ![b](b.jpg){width=10%} and ![a](images/a.png)\n")).toEqual(["images/a.png", "b.jpg"]);
   });

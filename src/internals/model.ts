@@ -178,25 +178,37 @@ export function quoteScalar(value: string): string {
 
 export function parseScalar(raw: string): string {
   const value = raw.trim();
-  if (value.startsWith('"')) {
-    let out = "";
-    for (let i = 1; i < value.length; i += 1) {
-      const char = value[i];
-      if (char === "\\") {
-        i += 1;
-        const escaped = value[i] ?? "";
-        out += escaped === "n" ? "\n" : escaped;
-        continue;
-      }
-      if (char === '"') break;
-      out += char;
-    }
-    return out;
-  }
-  if (value.startsWith("'") && value.endsWith("'") && value.length >= 2) {
-    return value.slice(1, -1).replace(/''/g, "'");
-  }
+  if (value.startsWith('"')) return unquoteDouble(value);
+  if (quotedSingle(value)) return unquoteSingle(value);
   return value;
+}
+
+function quotedSingle(value: string): boolean {
+  return value.startsWith("'") && value.endsWith("'") && value.length >= 2;
+}
+
+function unquoteSingle(value: string): string {
+  return value.slice(1, -1).replace(/''/g, "'");
+}
+
+function unquoteDouble(value: string): string {
+  let out = "";
+  for (let i = 1; i < value.length; i += 1) {
+    const char = value[i];
+    if (char === "\\") {
+      i += 1;
+      out += escapedChar(value[i]);
+      continue;
+    }
+    if (char === '"') break;
+    out += char;
+  }
+  return out;
+}
+
+function escapedChar(char: string | undefined): string {
+  const escaped = char ?? "";
+  return escaped === "n" ? "\n" : escaped;
 }
 
 function defaultHeader(partial: Partial<Header>): Header {

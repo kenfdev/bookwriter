@@ -4,6 +4,7 @@ import {
   clampHeadingLevel,
   codeSpanRanges,
   divisions,
+  filePath,
   effectiveUnit,
   insideSpan,
   nextPrefix,
@@ -78,6 +79,13 @@ describe("section files", () => {
     expect(parseScalar('"unterminated')).toBe("unterminated");
     expect(parseScalar("hello'")).toBe("hello'");
     expect(parseScalar("''")).toBe("");
+    expect(parseScalar("'")).toBe("'");
+    expect(parseScalar("'open")).toBe("'open");
+    const blank = parseSection('---\nid: a\ntitle: A\nsynopsis: ""\nstatus:\nrole:\n---\n');
+    expect(blank.header.status).toBe("idea");
+    expect(blank.header.role).toBe("body");
+    expect(blank.warnings.some((warning) => warning.includes('Status ""'))).toBe(true);
+    expect(blank.warnings.some((warning) => warning.includes('Role ""'))).toBe(true);
     const quoted = parseSection("---\nid: a\ntitle: T\nsynopsis: s\nstatus: idea\nrole: side\nnot a field\n---\nBody\n");
     expect(quoted.header.role).toBe("body");
     expect(quoted.warnings.some((warning) => warning.includes("Role"))).toBe(true);
@@ -146,6 +154,10 @@ describe("identity and order", () => {
     expect(assignPrefixes(100)[99]).toBe("1000");
     expect(nextPrefix(["010", "020"])).toBe("030");
     expect(nextPrefix([])).toBe("010");
+    const section = treeNode("section", "inward");
+    section.dir = "manuscript/010-rule";
+    section.entryName = "020-inward.md";
+    expect(filePath(section)).toBe("manuscript/010-rule/020-inward.md");
   });
 });
 

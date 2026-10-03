@@ -87,9 +87,11 @@ type Visit = { id: string; prose: boolean; state: EditorState | null };
 type Selection = { node: TreeNode; ancestors: TreeNode[] };
 type VisitMove = { trail: Trail<Visit>; to: Visit };
 type ContextAction = { label: string; run: () => Promise<void> };
+type CaretPoint = { offsetNode: Node; offset: number };
+
 type CaretDoc = Document & {
   caretRangeFromPoint?: (px: number, py: number) => Range | null;
-  caretPositionFromPoint?: (px: number, py: number) => { offsetNode: Node; offset: number } | null;
+  caretPositionFromPoint?: (px: number, py: number) => CaretPoint | null;
 };
 let trail = emptyTrail<Visit>();
 
@@ -226,9 +228,13 @@ function editingNode(node: TreeNode): boolean {
 }
 
 function selectedUnit(): Unit {
-  const picked = unitInputs.find((input) => input.checked)?.value;
+  const picked = checkedUnit();
   if (isUnit(picked)) return picked;
   return "text";
+}
+
+function checkedUnit(): string | undefined {
+  return unitInputs.find((input) => input.checked)?.value;
 }
 
 function isUnit(picked: string | undefined): picked is Unit {
@@ -529,17 +535,51 @@ function fractionAt(block: HTMLElement, x: number, y: number): number {
 
 function caretFraction(block: HTMLElement, x: number, y: number): number | null {
   const doc = block.ownerDocument as CaretDoc;
-  const total = block.textContent?.length ?? 0;
-  const range = doc.caretRangeFromPoint?.(x, y);
+  const total = textLength(block);
+  const range = rangeFromPoint(doc, x, y);
   const point = caretPoint(doc, range, x, y);
-  const node = range?.startContainer ?? point?.offsetNode;
-  const nodeOffset = range?.startOffset ?? point?.offset;
+  const node = caretNode(range, point);
+  const nodeOffset = caretOffset(range, point);
   if (!caretInside(block, node, nodeOffset, total)) return null;
   return probeFraction(doc, block, node, nodeOffset as number, total);
 }
 
-function caretPoint(doc: CaretDoc, range: Range | null | undefined, x: number, y: number) {
-  return range ? null : doc.caretPositionFromPoint?.(x, y);
+function textLength(block: HTMLElement): number {
+  const text = block.textContent;
+  if (text == null) return 0;
+  return text.length;
+}
+
+function rangeFromPoint(doc: CaretDoc, x: number, y: number): Range | null {
+  const fromPoint = doc.caretRangeFromPoint;
+  if (!fromPoint) return null;
+  return fromPoint.call(doc, x, y);
+}
+
+function caretNode(range: Range | null, point: CaretPoint | null | undefined): Node | undefined {
+  return range ? range.startContainer : offsetNode(point);
+}
+
+function offsetNode(point: CaretPoint | null | undefined): Node | undefined {
+  return point?.offsetNode;
+}
+
+function caretOffset(range: Range | null, point: CaretPoint | null | undefined): number | undefined {
+  return range ? range.startOffset : pointOffset(point);
+}
+
+function pointOffset(point: CaretPoint | null | undefined): number | undefined {
+  return point?.offset;
+}
+
+function caretPoint(doc: CaretDoc, range: Range | null, x: number, y: number): CaretPoint | null | undefined {
+  return range ? null : positionFromPoint(doc, x, y);
+}
+
+function positionFromPoint(doc: CaretDoc, x: number, y: number): CaretPoint | null | undefined {
+  const fromPoint = doc.caretPositionFromPoint;
+  if (!fromPoint) return null;
+  return fromPoint.call(doc, x, y);
 }
 
 function caretInside(block: HTMLElement, node: Node | undefined, nodeOffset: number | undefined, total: number): node is Node {
@@ -642,9 +682,15 @@ function offsetFromNearest(root: HTMLElement, event: MouseEvent, source: string)
 
 function offsetOfBlock(block: HTMLElement, event: MouseEvent, source: string): number {
   const start = Number(block.dataset.line);
-  const end = Number(block.dataset.end ?? String(start + 1));
+  const end = spanEnd(block, start);
   if (!integerSpan(start, end)) return 0;
   return sourceOffset(source, start, end, fractionAt(block, event.clientX, event.clientY));
+}
+
+function spanEnd(block: HTMLElement, start: number): number {
+  const raw = block.dataset.end;
+  if (raw == null) return start + 1;
+  return Number(raw);
 }
 
 function integerSpan(start: number, end: number): boolean {
@@ -803,12 +849,25 @@ function paintPreview(current: Selection): void {
   const scroll = keptScroll(node.header.id);
   previewEl.innerHTML = showPictures(rendered.html);
   previewEl.scrollTop = scroll;
-  showWarnings([...(book?.warnings ?? []), ...rendered.warnings]);
+  showWarnings([...bookWarnings(), ...rendered.warnings]);
+}
+
+function bookWarnings(): string[] {
+  if (!book) return [];
+  return book.warnings;
 }
 
 function keptScroll(id: string): number {
-  const sameSection = previewEl.querySelector<HTMLElement>("section[data-id]")?.dataset.id === id;
-  return sameSection ? previewEl.scrollTop : 0;
+  if (showingSection(id)) return previewEl.scrollTop;
+  return 0;
+}
+
+function showingSection(id: string): boolean {
+  return sectionId(previewEl.querySelector<HTMLElement>("section[data-id]")) === id;
+}
+
+function sectionId(section: HTMLElement | null): string | undefined {
+  return section?.dataset.id;
 }
 
 const PREVIEW_SCROLL_PADDING = 48;
@@ -893,7 +952,7 @@ function paintGroupReading(current: Selection): void {
   readingEl.hidden = false;
   const rendered = renderGroup(current.node, current.ancestors, groupDivisions());
   readingEl.innerHTML = showPictures(rendered.html);
-  showWarnings([...(book?.warnings ?? []), ...rendered.warnings]);
+  showWarnings([...bookWarnings(), ...rendered.warnings]);
 }
 
 function groupDivisions(): Map<string, Division> | undefined {
@@ -1115,8 +1174,14 @@ function dropOnRow(event: DragEvent, row: HTMLElement, node: TreeNode): void {
   event.preventDefault();
   const zone = dropZone(row, event.clientY, node.kind === "group");
   clearDropClasses(row);
-  const moving = event.dataTransfer?.getData("text/plain");
+  const moving = draggedId(event);
   if (moving) void drop(moving, node.header.id, zone);
+}
+
+function draggedId(event: DragEvent): string {
+  const data = event.dataTransfer;
+  if (!data) return "";
+  return data.getData("text/plain");
 }
 
 function dropClass(row: HTMLElement, clientY: number, group: boolean): string {
@@ -1326,7 +1391,7 @@ async function openCanonical(full: string): Promise<void> {
   document.title = titled(loaded.title);
   saveState.textContent = "Saved";
   await refresh(BOOK_ID, true);
-  if (pictureWarning) showWarnings([...(book?.warnings ?? []), pictureWarning]);
+  if (pictureWarning) showWarnings([...bookWarnings(), pictureWarning]);
 }
 
 async function pictureAccess(full: string): Promise<string> {
@@ -1510,8 +1575,12 @@ createTitle.addEventListener("keydown", (event) => {
 
 function clearBarMenu(): void {
   delete contextMenu.dataset.menu;
-  document.querySelector("#btn-file")?.setAttribute("aria-expanded", "false");
-  document.querySelector("#btn-edit")?.setAttribute("aria-expanded", "false");
+  collapseBar("#btn-file");
+  collapseBar("#btn-edit");
+}
+
+function collapseBar(selector: string): void {
+  document.querySelector(selector)?.setAttribute("aria-expanded", "false");
 }
 
 function closeContextMenu(): void {
@@ -1655,7 +1724,11 @@ function showCommandMenu(event: MouseEvent): void {
 
 function placeCommandCursor(event: MouseEvent): void {
   const pos = editor.posAtCoords({ x: event.clientX, y: event.clientY });
-  if (!keepsSelection(pos, editor.state.selection.main)) placeCursor(pos ?? editor.state.doc.length);
+  if (!keepsSelection(pos, editor.state.selection.main)) placeCursor(resolvedPos(pos));
+}
+
+function resolvedPos(pos: number | null): number {
+  return pos ?? editor.state.doc.length;
 }
 
 function keepsSelection(pos: number | null, range: { empty: boolean; from: number; to: number }): boolean {
@@ -1711,8 +1784,12 @@ async function placeTextAtTop(parentId: string, title: string): Promise<void> {
 
 async function moveBeforeFirst(parentId: string, id: string): Promise<void> {
   const parent = findNode(book!.nodes, parentId);
-  const first = parent?.node.children.find((child) => child.header.id !== id);
+  const first = otherChild(parent, id);
   if (first) await moveNode(fs, book!, id, first.header.id, "before");
+}
+
+function otherChild(parent: Selection | null, id: string): TreeNode | undefined {
+  return parent?.node.children.find((child) => child.header.id !== id);
 }
 
 async function addInside(parentId: string, kind: "group" | "section"): Promise<void> {
@@ -1758,7 +1835,7 @@ async function placeTextBelow(sectionId: string, title: string): Promise<void> {
 }
 
 async function finishTextBelow(sectionId: string, title: string, parent: TreeNode | undefined): Promise<void> {
-  const id = await createNode(fs, book!, parent?.header.id ?? null, "section", title);
+  const id = await createNode(fs, book!, nodeId(parent), "section", title);
   book = await loadBook(fs, book!.root);
   await moveNode(fs, book, id, sectionId, "after");
   if (parent) collapsed.delete(parent.header.id);
@@ -1857,7 +1934,12 @@ function survivingAncestor(current: Selection): string | undefined {
 }
 
 function firstManuscriptId(): string | null {
-  return manuscriptNodes(book!.nodes)[0]?.header.id ?? null;
+  return nodeId(manuscriptNodes(book!.nodes)[0]);
+}
+
+function nodeId(node: TreeNode | undefined): string | null {
+  if (!node) return null;
+  return node.header.id;
 }
 
 async function create(kind: "group" | "section"): Promise<void> {
@@ -1894,13 +1976,17 @@ function nodeOrAncestorTrash(current: Selection): boolean {
 }
 
 function parentFor(current: Selection | null): string | null {
-  if (current?.node.kind === "group") return current.node.header.id;
+  if (selectedGroup(current)) return current.node.header.id;
   return ancestorParent(current);
+}
+
+function selectedGroup(current: Selection | null): current is Selection {
+  return current?.node.kind === "group";
 }
 
 function ancestorParent(current: Selection | null): string | null {
   if (!current) return null;
-  return current.ancestors.at(-1)?.header.id ?? null;
+  return nodeId(current.ancestors.at(-1));
 }
 
 async function deleteSelected(): Promise<void> {
@@ -1973,7 +2059,11 @@ function pictureStillOpen(picked: unknown, root: string): picked is string {
 }
 
 function samePictureBook(root: string): boolean {
-  return book?.root === root && editing();
+  return currentBookIs(root) && editing();
+}
+
+function currentBookIs(root: string): boolean {
+  return book?.root === root;
 }
 
 async function insertPicture(root: string, picked: string): Promise<void> {
@@ -2087,8 +2177,8 @@ function fieldOpen(active: HTMLInputElement | HTMLTextAreaElement): boolean {
 }
 
 function replaceFieldSelection(field: HTMLInputElement | HTMLTextAreaElement, text: string): void {
-  const start = field.selectionStart ?? 0;
-  const end = field.selectionEnd ?? 0;
+  const start = selectionBound(field.selectionStart);
+  const end = selectionBound(field.selectionEnd);
   field.setRangeText(text, start, end, "end");
   field.dispatchEvent(new Event("input", { bubbles: true }));
   field.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2101,7 +2191,11 @@ async function editCopy(): Promise<void> {
 }
 
 async function copyField(field: HTMLInputElement | HTMLTextAreaElement): Promise<void> {
-  await writeText(field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0));
+  await writeText(field.value.slice(selectionBound(field.selectionStart), selectionBound(field.selectionEnd)));
+}
+
+function selectionBound(value: number | null): number {
+  return value ?? 0;
 }
 
 async function copyEditor(): Promise<void> {
@@ -2117,7 +2211,7 @@ async function editCut(): Promise<void> {
 }
 
 async function cutField(field: HTMLInputElement | HTMLTextAreaElement): Promise<void> {
-  await writeText(field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0));
+  await writeText(field.value.slice(selectionBound(field.selectionStart), selectionBound(field.selectionEnd)));
   replaceFieldSelection(field, "");
 }
 
@@ -2158,6 +2252,10 @@ function openReplace(): void {
   if (!editing()) return;
   openSearchPanel(editor);
   wireBookFind(editor);
+  focusReplaceField();
+}
+
+function focusReplaceField(): void {
   editor.dom.querySelector<HTMLInputElement>(".cm-search input[name=replace]")?.focus();
 }
 
@@ -2242,9 +2340,13 @@ function bookFindWired(panel: HTMLElement | null): panel is null {
 function attachBookFind(panel: HTMLElement, view: EditorView): void {
   panel.dataset.bookFind = "true";
   placeBookLabel(panel, bookLabel(bookCheckbox(), view));
-  panel.querySelector("button[name=next]")?.addEventListener("click", (event) => takeBookMatch("next", event), true);
-  panel.querySelector("button[name=prev]")?.addEventListener("click", (event) => takeBookMatch("previous", event), true);
+  watchBookButton(panel, "button[name=next]", "next");
+  watchBookButton(panel, "button[name=prev]", "previous");
   panel.addEventListener("keydown", onBookFindKey, true);
+}
+
+function watchBookButton(panel: HTMLElement, selector: string, direction: "next" | "previous"): void {
+  panel.querySelector(selector)?.addEventListener("click", (event) => takeBookMatch(direction, event), true);
 }
 
 function bookCheckbox(): HTMLInputElement {
@@ -2265,9 +2367,18 @@ function bookLabel(box: HTMLInputElement, view: EditorView): HTMLLabelElement {
 }
 
 function placeBookLabel(panel: HTMLElement, label: HTMLLabelElement): void {
-  const word = panel.querySelector('input[name="word"]')?.parentElement;
+  const word = wordRow(panel);
   if (word) word.after(label);
   else panel.append(label);
+}
+
+function wordRow(panel: HTMLElement): Element | null {
+  return inputParent(panel.querySelector('input[name="word"]'));
+}
+
+function inputParent(input: Element | null): Element | null {
+  if (!input) return null;
+  return input.parentElement;
 }
 
 function takeBookMatch(direction: "next" | "previous", event: Event): void {
@@ -2360,9 +2471,18 @@ function matchOrigin(direction: "next" | "previous"): number {
 }
 
 async function showHit(hit: FindHit, currentId: string, query: SearchQuery): Promise<void> {
-  const fromPanel = editor.dom.querySelector(".cm-search")?.contains(document.activeElement) ?? false;
+  const fromPanel = searchFieldFocused();
   if (hit.id !== currentId) await jumpToHit(hit, query, fromPanel);
   else showLocalHit(hit, fromPanel);
+}
+
+function searchFieldFocused(): boolean {
+  return elementContains(editor.dom.querySelector(".cm-search"), document.activeElement);
+}
+
+function elementContains(panel: Element | null, active: Element | null): boolean {
+  if (!panel) return false;
+  return panel.contains(active);
 }
 
 function showLocalHit(hit: FindHit, fromPanel: boolean): void {
@@ -2573,13 +2693,13 @@ function innerBlock(element: HTMLElement): HTMLElement | null {
 
 function renderedSpot(block: HTMLElement, element: HTMLElement, source: string): number {
   const start = Number(block.dataset.line);
-  const end = Number(block.dataset.end ?? String(start + 1));
+  const end = spanEnd(block, start);
   if (!integerSpan(start, end)) return 0;
   return sourceOffset(source, start, end, blockFraction(block, element));
 }
 
 function blockFraction(block: HTMLElement, element: HTMLElement): number {
-  const total = block.textContent?.length ?? 0;
+  const total = textLength(block);
   if (!(total > 0)) return 0;
   return rangeFraction(block, element, total);
 }

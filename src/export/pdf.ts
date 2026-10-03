@@ -619,9 +619,9 @@ class Layout {
   /** Place a picture (never split across pages) with an optional centred caption. */
   figure(image: PdfImage, key: number, size: { width?: number; height?: number }, indent: number, caption: string): void {
     const available = TEXT_WIDTH - indent;
-    const sideways = image.orientation >= 5;
-    const shownWidth = sideways ? image.height : image.width;
-    const shownHeight = sideways ? image.width : image.height;
+    const shown = orientedPixels(image);
+    const shownWidth = shown.width;
+    const shownHeight = shown.height;
     const captionLines = caption ? wrapRuns([{ text: caption, font: "F4" }], 9.5, available).length : 0;
     const captionHeight = captionLines ? captionLines * 9.5 * 1.35 + 4 : 0;
     const maxHeight = CONTENT_HEIGHT - captionHeight - 12;
@@ -643,6 +643,11 @@ class Layout {
     } else this.y -= 4;
     this.hold = null;
   }
+}
+
+function orientedPixels(image: PdfImage): { width: number; height: number } {
+  if (image.orientation < 5) return { width: image.width, height: image.height };
+  return { width: image.height, height: image.width };
 }
 
 const md = new MarkdownIt({ html: false, linkify: false, typographer: false });
@@ -712,6 +717,15 @@ function takeImage(child: MdToken, next: MdToken | undefined, available: number)
   return { segment: { picture, alone: false }, skip };
 }
 
+function footnoteLabel(meta: { id?: number } | null): string {
+  return `[${footnoteNumber(meta)}]`;
+}
+
+function footnoteNumber(meta: { id?: number } | null): number {
+  const id = meta?.id ?? 0;
+  return id + 1;
+}
+
 function layoutMark(state: InlineState, child: MdToken): boolean {
   switch (child.type) {
     case "strong_open":
@@ -733,7 +747,7 @@ function layoutMark(state: InlineState, child: MdToken): boolean {
       state.runs.push({ text: "\n", font: inlineFont(state) });
       return true;
     case "footnote_ref":
-      state.runs.push({ text: `[${Number((child.meta as { id?: number } | null)?.id ?? 0) + 1}]`, font: inlineFont(state) });
+      state.runs.push({ text: footnoteLabel(child.meta as { id?: number } | null), font: inlineFont(state) });
       return true;
     default:
       return false;

@@ -8,6 +8,7 @@ describe("menu shortcuts", () => {
     expect(formatAccelerator("CmdOrCtrl+Alt+F", true)).toBe("⌥⌘F");
     expect(formatAccelerator("CmdOrCtrl+Shift+G", true)).toBe("⇧⌘G");
     expect(formatAccelerator("CmdOrCtrl+B", true)).toBe("⌘B");
+    expect(formatAccelerator("Ctrl+Shift+E", true)).toBe("⌃⇧E");
   });
 
   it("writes Ctrl for other platforms", () => {

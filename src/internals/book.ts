@@ -294,11 +294,20 @@ function orderOf(nodes: TreeNode[]): string[] {
 }
 
 function siblingPlans(moving: Located, newParent: TreeNode | null, destination: TreeNode[]): SiblingPlan[] {
-  const dest = { parentId: newParent?.header.id ?? null, order: orderOf(destination) };
-  if ((moving.parent?.header.id ?? null) === (newParent?.header.id ?? null)) return [dest];
+  const dest = { parentId: headerId(newParent), order: orderOf(destination) };
+  if (headerId(moving.parent) === headerId(newParent)) return [dest];
   const movingId = moving.node.header.id;
-  const source = moving.siblings.filter((node) => node.header.id !== movingId && !isTrash(node));
-  return [{ parentId: moving.parent?.header.id ?? null, order: orderOf(source) }, dest];
+  const source = moving.siblings.filter((node) => keptSibling(node, movingId));
+  return [{ parentId: headerId(moving.parent), order: orderOf(source) }, dest];
+}
+
+function headerId(node: TreeNode | null): string | null {
+  if (!node) return null;
+  return node.header.id;
+}
+
+function keptSibling(node: TreeNode, movingId: string): boolean {
+  return node.header.id !== movingId && !isTrash(node);
 }
 
 function locatePair(roots: TreeNode[], movingId: string, targetId: string): { moving: Located; target: Located } | null {
