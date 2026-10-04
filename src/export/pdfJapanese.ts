@@ -58,6 +58,14 @@ function stream(data: string, dictionary = ""): string {
   return `<< /Length ${data.length} ${dictionary} >>\nstream\n${data}\nendstream`;
 }
 
+/** OS/2 v0/v1 fonts omit sCapHeight; OpenType permits measuring capital H. */
+function capHeight(font: Font): number {
+  const height = Number.isFinite(font.capHeight) ? font.capHeight
+    : font.hasGlyphForCodePoint(0x48) ? font.glyphForCodePoint(0x48).bbox.maxY : 0;
+  const scaled = Math.round(height * 1000 / font.unitsPerEm);
+  return Number.isFinite(scaled) ? scaled : 0;
+}
+
 /** Per-document character IDs: Unicode aliases may share a glyph but must extract separately. */
 export class JapanesePdfFont {
   private readonly characters = new Map<number, number>();
@@ -103,7 +111,7 @@ export class JapanesePdfFont {
     const name = font.postscriptName;
     const scale = 1000 / font.unitsPerEm;
     const bbox = [font.bbox.minX, font.bbox.minY, font.bbox.maxX, font.bbox.maxY].map((n) => Math.round(n * scale));
-    const descriptorId = add(`<< /Type /FontDescriptor /FontName /${name} /Flags 4 /FontBBox [${bbox.join(" ")}] /ItalicAngle 0 /Ascent ${Math.round(font.ascent * scale)} /Descent ${Math.round(font.descent * scale)} /CapHeight ${Math.round(font.capHeight * scale)} /StemV ${this.key === "J2" ? 120 : 80} /FontFile2 ${fileId} 0 R >>`);
+    const descriptorId = add(`<< /Type /FontDescriptor /FontName /${name} /Flags 4 /FontBBox [${bbox.join(" ")}] /ItalicAngle 0 /Ascent ${Math.round(font.ascent * scale)} /Descent ${Math.round(font.descent * scale)} /CapHeight ${capHeight(font)} /StemV ${this.key === "J2" ? 120 : 80} /FontFile2 ${fileId} 0 R >>`);
     const descendantId = add(`<< /Type /Font /Subtype /CIDFontType2 /BaseFont /${name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ${descriptorId} 0 R /W [1 [${widths.join(" ")}]] /CIDToGIDMap ${gidId} 0 R >>`);
     objects[id] = `<< /Type /Font /Subtype /Type0 /BaseFont /${name} /Encoding /Identity-H /DescendantFonts [${descendantId} 0 R] /ToUnicode ${cmapId} 0 R >>`;
   }

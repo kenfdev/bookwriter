@@ -94,3 +94,31 @@ it("embeds structurally complete Japanese fonts alongside transparent pictures",
     for (const tag of ["cmap", "name", "post", "OS/2", "glyf", "loca"]) expect(tags).toContain(tag);
   }
 });
+
+// OS/2 v1 fonts omit sCapHeight. Check the serialized descriptors themselves:
+// lenient renderers can silently accept invalid tokens such as NaN as null.
+it.each([
+  ["heading and body", "# 日本語の見出し\n\n日本語の本文。", 2],
+  ["regular body", "日本語の本文。", 1],
+  ["bold body", "**日本語の太字。**", 1],
+  ["code", "```ts\nconst 名前 = '東京';\n```", 1],
+])("writes finite font descriptor metrics for %s", (_label, markdown, count) => {
+  const pdf = markdownToPdf(markdown as string).pdf;
+  const descriptors = [...pdf.matchAll(/<< \/Type \/FontDescriptor [^>]+ >>/g)];
+  expect(descriptors).toHaveLength(count as number);
+  const number = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
+  for (const [descriptor] of descriptors) {
+    for (const key of ["Flags", "ItalicAngle", "Ascent", "Descent", "CapHeight", "StemV"]) {
+      const value = new RegExp(`/${key} (\\S+)`).exec(descriptor)?.[1];
+      expect(value, key).toMatch(number);
+      expect(Number.isFinite(Number(value)), key).toBe(true);
+    }
+    const bounds = /\/FontBBox \[([^\]]+)\]/.exec(descriptor)?.[1].split(/\s+/);
+    expect(bounds).toHaveLength(4);
+    for (const value of bounds!) {
+      expect(value).toMatch(number);
+      expect(Number.isFinite(Number(value))).toBe(true);
+    }
+    expect(Number(/\/CapHeight (\S+)/.exec(descriptor)![1])).toBeGreaterThan(0);
+  }
+});
