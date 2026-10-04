@@ -4,7 +4,9 @@
 files from M PLUS 1p. Encoding them as JSON keeps the synchronous PDF generator
 usable in both Vite/Tauri and Node without network requests, filesystem APIs,
 or separate font-loading setup. The PDF module is loaded only when exporting
-from the app; decoded font faces are cached, and each PDF embeds its own subset.
+from the app; decoded font faces are cached, and each PDF embeds each used Japanese face intact. Complete fonts preserve their
+original tables and checksums for native viewer compatibility; character IDs and
+Unicode maps remain local to each document.
 
 - Copyright 2016 The M+ Project Authors.
 - License: SIL Open Font License 1.1; the complete notice is in [`public/licenses/MPLUS1p-OFL.txt`](../../../public/licenses/MPLUS1p-OFL.txt)
