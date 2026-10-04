@@ -11,7 +11,7 @@ import { encodeImage, type EncodeOptions, type PdfImage } from "./pdfimage";
 /**
  * PDF export. The book is exported to manuscript Markdown exactly as the Markdown
  * export does, parsed with the same Markdown dialect the preview uses, then laid
- * out on US Letter pages with standard Latin fonts and subset embedded Japanese
+ * out on US Letter pages with standard Latin fonts and embedded Japanese
  * fonts. Latin body text is Helvetica and code is Courier. Pictures and font data
  * use ASCII85, so the PDF can still be saved through the ordinary text writer.
  */

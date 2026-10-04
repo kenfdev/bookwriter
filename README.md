@@ -133,7 +133,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 
 PDF export includes M PLUS 1p regular and bold fonts for Japanese headings,
 body text, captions, notes, and code. The fonts are bundled for offline use;
-only glyphs used by a document are embedded. Japanese text remains selectable
+each used Japanese face is embedded intact. Japanese text remains selectable
 and extractable through PDF Unicode maps. Existing Helvetica/Courier Latin
 text is retained, and Latin-only PDFs do not embed the Japanese fonts.
 
@@ -153,7 +153,11 @@ may add spaces/newlines around mixed fonts and line/page breaks.
 
 The export chunk is loaded on demand and adds about 5.1 MB to the packaged
 frontend (about 2.65 MB gzip). A four-page sample with both font styles is about
-81 KB. Font sources, reproducible encoding, checksums, and a link to the bundled license are in
+4.49 MB. Complete font embedding adds roughly 2.2 MB per used face to the PDF.
+It preserves the original font tables and checksums rather than relying on
+PDF-only subsets. This compatibility candidate still requires verification in
+macOS Preview; passing Linux renderer checks does not establish Preview support.
+Font sources, reproducible encoding, checksums, and a link to the bundled license are in
 [`src/export/fonts/`](src/export/fonts/README.md).
 
 Generate the self-authored, shareable regression sample without launching Tauri:
@@ -168,3 +172,13 @@ The verification script requires Poppler (`pdftotext`, `pdfinfo`, `pdffonts`).
 It checks Japanese extraction, every numbered code row, complete long passages,
 font embedding, Unicode metadata, and text bounds on all four pages. Inspect
 all rendered PNGs as well. `npm test` runs the portable export regressions.
+
+A one-page Japanese-and-images fixture is available for native viewer checks:
+
+```sh
+npx tsx scripts/preview-pdf-sample.ts /tmp/bookwriter-preview-sample.pdf
+```
+
+Open it in macOS Preview and check the Japanese heading, bold text, captions,
+body before/after both pictures, and code. This requires macOS; it is separate
+from the automated checks above.

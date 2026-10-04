@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { markdownToPdf } from "./pdf";
+import { makePng, unascii85 } from "../imageFixtures";
+import { encodeImage } from "./pdfimage";
 
 describe("Japanese PDF export", () => {
   it("embeds readable and extractable Japanese in headings, body, and code", () => {
@@ -38,7 +40,7 @@ describe("Japanese PDF font isolation", () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it("subsets each PDF independently and normalizes decomposed kana", () => {
+  it("maps each PDF independently and normalizes decomposed kana", () => {
     const first = markdownToPdf("がぱ").pdf;
     markdownToPdf("全く別の文書");
     expect(markdownToPdf("か\u3099は\u309a").pdf).toEqual(first);
@@ -49,4 +51,46 @@ describe("Japanese PDF font isolation", () => {
     expect(expandTabs("日\t本")).toBe("日  本");
     expect(expandTabs("ｶﾅ\t本")).toBe("ｶﾅ  本");
   });
+});
+
+// Check the actual embedded sfnt, independently of the font writer. Lenient PDF
+// renderers can display a malformed subset that stricter font loaders reject.
+function checksum(bytes: Uint8Array): number {
+  let sum = 0;
+  for (let i = 0; i < bytes.length; i += 4) {
+    const word = ((bytes[i] ?? 0) * 0x1000000) + ((bytes[i + 1] ?? 0) << 16)
+      + ((bytes[i + 2] ?? 0) << 8) + (bytes[i + 3] ?? 0);
+    sum = (sum + word) >>> 0;
+  }
+  return sum;
+}
+
+it("embeds structurally complete Japanese fonts alongside transparent pictures", async () => {
+  const image = await encodeImage(makePng({ width: 1, height: 1, colorType: 6, rows: [[20, 100, 200, 128]] }));
+  const result = markdownToPdf("# 日本語の見出し\n\n画像の前。\n\n![日本語の図](image.png)\n\n画像の後。", "", new Map([["image.png", { image }]]));
+  expect(result.warnings).toEqual([]);
+  expect(result.pdf).toContain("/SMask");
+  const streams = [...result.pdf.matchAll(/<< \/Length \d+ \/Filter \/ASCII85Decode \/Length1 (\d+) >>\nstream\n([\s\S]*?)\nendstream/g)];
+  expect(streams).toHaveLength(2);
+  for (const stream of streams) {
+    const bytes = unascii85(stream[2]);
+    expect(bytes.length).toBe(Number(stream[1]));
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect([0x00010000, 0x74727565]).toContain(view.getUint32(0));
+    expect(checksum(bytes)).toBe(0xb1b0afba);
+    const tags: string[] = [];
+    for (let i = 0; i < view.getUint16(4); i++) {
+      const record = 12 + i * 16;
+      const tag = String.fromCharCode(...bytes.subarray(record, record + 4));
+      tags.push(tag);
+      const offset = view.getUint32(record + 8), length = view.getUint32(record + 12);
+      expect(offset % 4).toBe(0);
+      expect(offset + length).toBeLessThanOrEqual(bytes.length);
+      const table = bytes.slice(offset, offset + length);
+      if (tag === "head") table.fill(0, 8, 12);
+      expect(checksum(table)).toBe(view.getUint32(record + 4));
+    }
+    expect(tags).toEqual([...tags].sort());
+    for (const tag of ["cmap", "name", "post", "OS/2", "glyf", "loca"]) expect(tags).toContain(tag);
+  }
 });

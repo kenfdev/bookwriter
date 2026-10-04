@@ -24,7 +24,7 @@ assert "日本語の本 — Bookwriter" in info, "Unicode metadata did not round
 fonts = subprocess.check_output(["pdffonts", pdf], text=True)
 for name in ["MPLUS1p-Regular", "MPLUS1p-Bold"]:
     line = next(line for line in fonts.splitlines() if name in line)
-    assert re.search(r"yes\s+yes\s+yes", line), "Japanese font must be embedded, subset, and Unicode mapped"
+    assert re.search(r"yes\s+no\s+yes", line), "Japanese font must be embedded intact and Unicode mapped"
 xml = subprocess.check_output(["pdftotext", "-bbox", pdf, "-"])
 root = ET.fromstring(xml)
 ns = {"pdf": "http://www.w3.org/1999/xhtml"}
@@ -37,4 +37,4 @@ for number, page in enumerate(pages, 1):
         if word.text == str(number) and y0 > 730:
             continue
         assert 60 <= y0 <= y1 <= 721, (number, word.text, "vertical overflow", y0, y1)
-print(f"PASS: {len(pages)} pages; Japanese text, all 65 code rows, long body/code, Unicode title, embedded subsets, and text bounds")
+print(f"PASS: {len(pages)} pages; Japanese text, all 65 code rows, long body/code, Unicode title, embedded fonts, and text bounds")

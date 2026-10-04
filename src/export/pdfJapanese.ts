@@ -7,12 +7,23 @@ export type JapaneseFontKey = "J1" | "J2";
 // fontkit 2 accepts Uint8Array in browsers; @types/fontkit still requires Node Buffer.
 const createFont = create as (bytes: Uint8Array) => Font | FontCollection;
 const fonts = new Map<JapaneseFontKey, Font>();
+const fontBytes = new Map<JapaneseFontKey, Uint8Array>();
+const fontStreams = new Map<JapaneseFontKey, string>();
+
+function bytesFor(key: JapaneseFontKey): Uint8Array {
+  let bytes = fontBytes.get(key);
+  if (!bytes) {
+    const data = key === "J2" ? boldData : regularData;
+    bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+    fontBytes.set(key, bytes);
+  }
+  return bytes;
+}
 
 function fontFor(key: JapaneseFontKey): Font {
   let font = fonts.get(key);
   if (!font) {
-    const data = key === "J2" ? boldData : regularData;
-    const decoded = createFont(Uint8Array.from(atob(data), (char) => char.charCodeAt(0)));
+    const decoded = createFont(bytesFor(key));
     if (!("glyphForCodePoint" in decoded)) throw new Error("Expected a single Japanese font face");
     font = decoded;
     fonts.set(key, font);
@@ -66,25 +77,30 @@ export class JapanesePdfFont {
 
   write(objects: string[], id: number): void {
     const font = fontFor(this.key);
-    const subset = font.createSubset();
     const widths: number[] = [];
     const gids = new Uint8Array((this.characters.size + 1) * 2);
     const mappings: string[] = [];
     for (const [cp, cid] of this.characters) {
-      // @types/fontkit incorrectly declares the subset glyph ID as boolean.
-      const gid: unknown = subset.includeGlyph(font.glyphForCodePoint(cp));
-      if (typeof gid !== "number") throw new Error("Invalid font subset glyph ID");
+      const gid = font.glyphForCodePoint(cp).id;
       gids[cid * 2] = gid >> 8;
       gids[cid * 2 + 1] = gid & 255;
       widths.push(japaneseWidth(cp, this.key));
       mappings.push(`<${hexCode(cid)}> <${unicodeHex(String.fromCodePoint(cp))}>`);
     }
-    const bytes = subset.encode();
+    // Preserve the original font's tables, alignment, and checksums. fontkit's
+    // PDF-only subsets omit tables and emit an unsorted, unaligned directory
+    // with zero checksums. Avoid relying on a viewer to repair that structure.
+    const bytes = bytesFor(this.key);
+    let encoded = fontStreams.get(this.key);
+    if (!encoded) {
+      encoded = ascii85(bytes);
+      fontStreams.set(this.key, encoded);
+    }
     const add = (value: string): number => objects.push(value) - 1;
-    const fileId = add(stream(ascii85(bytes), `/Filter /ASCII85Decode /Length1 ${bytes.length}`));
+    const fileId = add(stream(encoded, `/Filter /ASCII85Decode /Length1 ${bytes.length}`));
     const gidId = add(stream(ascii85(gids), "/Filter /ASCII85Decode"));
     const cmapId = add(stream(toUnicode(mappings)));
-    const name = `BWJPAA+${font.postscriptName}`;
+    const name = font.postscriptName;
     const scale = 1000 / font.unitsPerEm;
     const bbox = [font.bbox.minX, font.bbox.minY, font.bbox.maxX, font.bbox.maxY].map((n) => Math.round(n * scale));
     const descriptorId = add(`<< /Type /FontDescriptor /FontName /${name} /Flags 4 /FontBBox [${bbox.join(" ")}] /ItalicAngle 0 /Ascent ${Math.round(font.ascent * scale)} /Descent ${Math.round(font.descent * scale)} /CapHeight ${Math.round(font.capHeight * scale)} /StemV ${this.key === "J2" ? 120 : 80} /FontFile2 ${fileId} 0 R >>`);
