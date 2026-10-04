@@ -99,7 +99,7 @@ describe("pdf export", () => {
     const result = markdownToPdf("Caf\u00e9 \u2014 \u201cquoted\u201d \u4e2d\n");
     expect(/^[\x00-\x7f]*$/.test(result.pdf)).toBe(true);
     expect(result.pdf).toContain("\\351");
-    expect(result.warnings.some((warning) => warning.includes("cannot be shown"))).toBe(true);
+    expect(result.warnings).toEqual([]);
   });
 
   it("starts each folder on a new page and leaves a section where it falls", () => {
