@@ -128,3 +128,43 @@ Tests are the `*.test.ts` files next to the source, and the tests at the bottom 
 npm test
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
+
+## Japanese PDF export
+
+PDF export includes M PLUS 1p regular and bold fonts for Japanese headings,
+body text, captions, notes, and code. The fonts are bundled for offline use;
+only glyphs used by a document are embedded. Japanese text remains selectable
+and extractable through PDF Unicode maps. Existing Helvetica/Courier Latin
+text is retained, and Latin-only PDFs do not embed the Japanese fonts.
+
+Japanese and mixed Latin text wrap by measured glyph widths, with basic
+Japanese punctuation rules. Code keeps its spaces and tab stops, uses two
+Latin columns for fullwidth Japanese characters, and wraps within its shaded
+box across pages. Kana with decomposed dakuten/handakuten is normalized to NFC.
+Japanese emphasis uses upright regular/bold faces; Latin italics are unchanged.
+
+Coverage is limited to the bundled fonts (8,331 mapped code points per face).
+Rare kanji, supplementary ideographs, emoji, and variation sequences are not
+fully supported; missing glyphs appear as explicit `[U+XXXX]` markers and are
+listed in export warnings. This is horizontal Japanese manuscript output, not
+complete Japanese typesetting: vertical text, ruby, full JIS line-breaking,
+and shaping for other writing systems are not implemented. Text extraction
+may add spaces/newlines around mixed fonts and line/page breaks.
+
+The export chunk is loaded on demand and adds about 5.1 MB to the packaged
+frontend (about 2.65 MB gzip). A four-page sample with both font styles is about
+81 KB. Font sources, reproducible encoding, checksums, and a link to the bundled license are in
+[`src/export/fonts/`](src/export/fonts/README.md).
+
+Generate the self-authored, shareable regression sample without launching Tauri:
+
+```sh
+npx tsx scripts/japanese-pdf-sample.ts /tmp/bookwriter-japanese.pdf
+python3 scripts/verify-japanese-pdf.py /tmp/bookwriter-japanese.pdf
+pdftoppm -png /tmp/bookwriter-japanese.pdf /tmp/bookwriter-japanese
+```
+
+The verification script requires Poppler (`pdftotext`, `pdfinfo`, `pdffonts`).
+It checks Japanese extraction, every numbered code row, complete long passages,
+font embedding, Unicode metadata, and text bounds on all four pages. Inspect
+all rendered PNGs as well. `npm test` runs the portable export regressions.

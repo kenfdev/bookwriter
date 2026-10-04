@@ -1,3 +1,4 @@
+import { JapanesePdfFont, hasJapaneseGlyph, isJapaneseFont, japaneseWidth, unicodeHex, type JapaneseFontKey } from "./pdfJapanese";
 import MarkdownIt from "markdown-it";
 import footnote from "markdown-it-footnote";
 import type { Fs } from "../internals/book";
@@ -10,9 +11,9 @@ import { encodeImage, type EncodeOptions, type PdfImage } from "./pdfimage";
 /**
  * PDF export. The book is exported to manuscript Markdown exactly as the Markdown
  * export does, parsed with the same Markdown dialect the preview uses, then laid
- * out on US Letter pages with the PDF standard fonts. Body text is Helvetica, code
- * is Courier, and pictures are embedded. The result is plain ASCII (picture data is
- * ASCII85 text), so it can be saved through the same text writer as every other export.
+ * out on US Letter pages with standard Latin fonts and subset embedded Japanese
+ * fonts. Latin body text is Helvetica and code is Courier. Pictures and font data
+ * use ASCII85, so the PDF can still be saved through the ordinary text writer.
  */
 
 export type PdfResult = { pdf: string; pages: number; warnings: string[] };
@@ -30,9 +31,10 @@ const BOTTOM = MARGIN;
 const CONTENT_HEIGHT = PAGE_HEIGHT - 2 * MARGIN;
 
 /** F1 Helvetica, F2 Helvetica-Bold, F3 Courier, F4 Helvetica-Oblique, F5 Helvetica-BoldOblique, F6 Symbol. */
-type FontKey = "F1" | "F2" | "F3" | "F4" | "F5" | "F6";
+type StandardFontKey = "F1" | "F2" | "F3" | "F4" | "F5" | "F6";
+type FontKey = StandardFontKey | JapaneseFontKey;
 
-const FONT_NAMES: Record<FontKey, string> = {
+const FONT_NAMES: Record<StandardFontKey, string> = {
   F1: "Helvetica",
   F2: "Helvetica-Bold",
   F3: "Courier",
@@ -139,21 +141,30 @@ function raisedDigit(cp: number): number | undefined {
   return undefined;
 }
 
-/** Map text to single-byte WinAnsi codes; anything outside that set becomes "?". A tab is one space here; code expands tabs first. */
+/** Encode known WinAnsi labels. Manuscript text must go through glyphs for Unicode fallback. */
 function encode(text: string): number[] {
   const codes: number[] = [];
-  for (const char of text.normalize("NFC")) codes.push(winAnsiByte(char.codePointAt(0)!) ?? 63);
+  for (const char of text.normalize("NFC")) {
+    const code = winAnsiByte(char.codePointAt(0)!);
+    if (code === null) throw new Error("Unicode text must use the PDF font fallback");
+    codes.push(code);
+  }
   return codes;
 }
 
-function hasUnshownCharacter(text: string): boolean {
+function missingCharacters(text: string): string[] {
+  const missing = new Set<string>();
   for (const char of text.normalize("NFC")) {
     const cp = char.codePointAt(0)!;
     if (cp === 10 || cp === 13 || cp === 0x03c0 || cp === 0x03a0) continue;
-    if (raisedDigit(cp) !== undefined) continue;
-    if (winAnsiByte(cp) === null) return true;
+    if (raisedDigit(cp) !== undefined || winAnsiByte(cp) !== null) continue;
+    if (!hasJapaneseGlyph(cp)) missing.add(characterLabel(cp));
   }
-  return false;
+  return [...missing];
+}
+
+function characterLabel(cp: number): string {
+  return "U+" + cp.toString(16).toUpperCase().padStart(4, "0");
 }
 
 /** Replace tabs with spaces up to the next multiple of `stop` columns, so indentation lines up. */
@@ -167,7 +178,8 @@ export function expandTabs(line: string, stop = 4): string {
       column += spaces;
     } else {
       out += char;
-      column += 1;
+      const cp = char.codePointAt(0)!;
+      column += isJapaneseCharacter(cp) && hasJapaneseGlyph(cp) ? japaneseWidth(cp, "J1") / 500 : 1;
     }
   }
   return out;
@@ -184,6 +196,7 @@ function pdfString(codes: number[]): string {
 }
 
 function glyphWidth(code: number, font: FontKey): number {
+  if (isJapaneseFont(font)) return japaneseWidth(code, font);
   if (font === "F3") return 600;
   if (font === "F6") return code === 0x70 ? 549 : code === 0x50 ? 614 : 556;
   const table = font === "F2" || font === "F5" ? HELVETICA_BOLD : HELVETICA;
@@ -235,7 +248,14 @@ function glyphs(text: string, font: FontKey): Glyph[] {
       out.push({ code: 0x50, font: "F6" });
       continue;
     }
-    out.push({ code: winAnsiByte(cp) ?? 63, font });
+    const byte = winAnsiByte(cp);
+    const japaneseFont = font === "F2" || font === "F5" ? "J2" : "J1";
+    if (byte !== null) out.push({ code: byte, font });
+    else if (hasJapaneseGlyph(cp, japaneseFont)) {
+      out.push({ code: cp, font: japaneseFont, scale: font === "F3" ? 1.2 : undefined });
+    } else {
+      for (const code of encode(`[${characterLabel(cp)}]`)) out.push({ code, font });
+    }
   }
   return out;
 }
@@ -266,8 +286,27 @@ function addGlyph(word: Piece[], glyph: Glyph): void {
   else word.push({ codes: [glyph.code], font: glyph.font, rise: glyph.rise, scale: glyph.scale });
 }
 
+function isJapaneseCharacter(cp: number): boolean {
+  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3000-\u303f\uff01-\uff60]/u.test(String.fromCodePoint(cp));
+}
+
+const NO_LINE_START = new Set(Array.from("、。，．・：；？！ー々ヽヾゝゞ〻ﾞﾟｧｨｩｪｫｯｬｭｮぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ）〕］｝〉》」』】〙〗〟’”｠»)]},.!?:;"));
+const NO_LINE_END = new Set(Array.from("（〔［｛〈《「『【〘〖〝‘“｟«([{“"));
+
+function japaneseBreak(before: number, after: number): boolean {
+  return (isJapaneseCharacter(before) || isJapaneseCharacter(after))
+    && !NO_LINE_END.has(String.fromCodePoint(before))
+    && !NO_LINE_START.has(String.fromCodePoint(after))
+    && !/\p{Mark}/u.test(String.fromCodePoint(after));
+}
+
 function takeGlyph(lines: Token[][], word: Piece[], glyph: Glyph, run: Run): Piece[] {
   if (!breakSpace(glyph, run)) {
+    const tail = word[word.length - 1];
+    const previous = tail?.codes[tail.codes.length - 1];
+    if (!run.nobreak && previous !== undefined && japaneseBreak(previous, glyph.code)) {
+      word = finishWord(lines[lines.length - 1], word);
+    }
     addGlyph(word, glyph);
     return word;
   }
@@ -325,7 +364,7 @@ function cutLongWord(word: Piece[], size: number, width: number): Piece[][] {
   for (const piece of word) {
     for (const code of piece.codes) {
       const w = textWidth([code], piece.font, size * (piece.scale ?? 1));
-      if (used + w > width && used > 0) {
+      if (used + w > width + 0.000001 && used > 0) {
         lines.push(pieces);
         pieces = [];
         used = 0;
@@ -449,7 +488,7 @@ function nextHold(
   return { index: origin, cursor, yAfter };
 }
 
-type CodeRow = { codes: number[]; more: boolean };
+type CodeRow = { pieces: Piece[]; more: boolean };
 
 function codeColumns(boxWidth: number): number {
   return Math.max(8, Math.floor((boxWidth - CODE_RULE - 2 * CODE_PAD - 6) / (0.6 * CODE_SIZE)));
@@ -458,11 +497,10 @@ function codeColumns(boxWidth: number): number {
 function codeRows(source: string, columns: number): CodeRow[] {
   const rows: CodeRow[] = [];
   for (const line of source.split("\n")) {
-    const codes = encode(expandTabs(line));
-    if (codes.length === 0) rows.push({ codes, more: false });
-    for (let at = 0; at < codes.length; at += columns) {
-      rows.push({ codes: codes.slice(at, at + columns), more: at + columns < codes.length });
-    }
+    const pieces: Piece[] = [];
+    for (const glyph of glyphs(expandTabs(line), "F3")) addGlyph(pieces, glyph);
+    const wrapped = cutLongWord(pieces, CODE_SIZE, columns * 0.6 * CODE_SIZE);
+    wrapped.forEach((pieces, index) => rows.push({ pieces, more: index < wrapped.length - 1 }));
   }
   return rows;
 }
@@ -480,8 +518,8 @@ function codeSlice(take: number, remaining: number, pageEmpty: boolean): number 
 
 function paintCodeRow(page: Item[], row: CodeRow, boxX: number, boxWidth: number, baseline: number): void {
   const x = boxX + CODE_RULE + CODE_PAD;
-  if (row.codes.length > 0) {
-    page.push({ kind: "text", pieces: [{ codes: row.codes, font: "F3" }], size: CODE_SIZE, x, y: baseline });
+  if (row.pieces.length > 0) {
+    page.push({ kind: "text", pieces: row.pieces, size: CODE_SIZE, x, y: baseline });
   }
   if (row.more) {
     page.push({
@@ -1206,7 +1244,7 @@ function imageMatrix(item: ImageItem): string {
   return (m[item.orientation] ?? m[1]).map((n) => String(Math.round(n * 1000) / 1000)).join(" ");
 }
 
-function fontObject(key: FontKey): string {
+function fontObject(key: StandardFontKey): string {
   const encoding = key === "F6" ? "" : " /Encoding /WinAnsiEncoding";
   return `<< /Type /Font /Subtype /Type1 /BaseFont /${FONT_NAMES[key]}${encoding} >>`;
 }
@@ -1227,24 +1265,25 @@ function pieceSize(item: TextItem, piece: Piece): string {
   return piece.scale ? (item.size * piece.scale).toFixed(2) : String(item.size);
 }
 
-function showPiece(item: TextItem, piece: Piece): string {
+function showPiece(item: TextItem, piece: Piece, japanese: Map<JapaneseFontKey, JapanesePdfFont>): string {
   let out = ` /${piece.font} ${pieceSize(item, piece)} Tf`;
   if (piece.rise) out += ` ${(item.size * piece.rise).toFixed(2)} Ts`;
-  out += ` ${pdfString(piece.codes)} Tj`;
+  const text = isJapaneseFont(piece.font) ? japanese.get(piece.font)!.encode(piece.codes) : pdfString(piece.codes);
+  out += ` ${text} Tj`;
   if (piece.rise) out += " 0 Ts";
   return out;
 }
 
-function showText(item: TextItem): string {
+function showText(item: TextItem, japanese: Map<JapaneseFontKey, JapanesePdfFont>): string {
   const visible = item.pieces.filter((piece) => piece.codes.length > 0);
   if (visible.length === 0) return "";
   const gray = item.gray === undefined ? "0 g" : `${item.gray} g`;
   let out = `BT ${gray} ${item.x.toFixed(2)} ${item.y.toFixed(2)} Td`;
-  for (const piece of visible) out += showPiece(item, piece);
+  for (const piece of visible) out += showPiece(item, piece, japanese);
   return out + " ET\n";
 }
 
-function showItem(item: Item, used: Set<number>): string {
+function showItem(item: Item, used: Set<number>, japanese: Map<JapaneseFontKey, JapanesePdfFont>): string {
   if (item.kind === "rule") {
     return `0.6 G 0.5 w ${MARGIN} ${item.y.toFixed(2)} m ${PAGE_WIDTH - MARGIN} ${item.y.toFixed(2)} l S\n`;
   }
@@ -1255,13 +1294,13 @@ function showItem(item: Item, used: Set<number>): string {
     used.add(item.index);
     return `q ${imageMatrix(item)} cm /Im${item.index} Do Q\n`;
   }
-  return showText(item);
+  return showText(item, japanese);
 }
 
-function pageStream(items: Item[], index: number): { body: string; used: Set<number> } {
+function pageStream(items: Item[], index: number, japanese: Map<JapaneseFontKey, JapanesePdfFont>): { body: string; used: Set<number> } {
   const used = new Set<number>();
   let body = "";
-  for (const item of items) body += showItem(item, used);
+  for (const item of items) body += showItem(item, used, japanese);
   const label = pdfString(encode(String(index + 1)));
   const width = textWidth(encode(String(index + 1)), "F1", 9);
   body += `0 g BT /F1 9 Tf ${((PAGE_WIDTH - width) / 2).toFixed(2)} ${FOOTER_Y} Td ${label} Tj ET\n`;
@@ -1276,17 +1315,17 @@ function pageResources(fontKeys: FontKey[], used: Set<number>, imageIds: number[
   return `/Resources << /Font << ${fonts} >>${xobjects} >>`;
 }
 
-function writePage(objects: string[], items: Item[], index: number, fontKeys: FontKey[], imageIds: number[], firstPage: number): void {
+function writePage(objects: string[], items: Item[], index: number, fontKeys: FontKey[], imageIds: number[], firstPage: number, japanese: Map<JapaneseFontKey, JapanesePdfFont>): void {
   const pageId = firstPage + index * 2;
-  const { body, used } = pageStream(items, index);
+  const { body, used } = pageStream(items, index, japanese);
   objects[pageId] =
     `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] ` +
     `${pageResources(fontKeys, used, imageIds)} /Contents ${pageId + 1} 0 R >>`;
   objects[pageId + 1] = `<< /Length ${body.length} >>\nstream\n${body}endstream`;
 }
 
-function writePages(objects: string[], pages: Item[][], fontKeys: FontKey[], imageIds: number[], firstPage: number): void {
-  pages.forEach((items, index) => writePage(objects, items, index, fontKeys, imageIds, firstPage));
+function writePages(objects: string[], pages: Item[][], fontKeys: FontKey[], imageIds: number[], firstPage: number, japanese: Map<JapaneseFontKey, JapanesePdfFont>): void {
+  pages.forEach((items, index) => writePage(objects, items, index, fontKeys, imageIds, firstPage, japanese));
 }
 
 function imageObject(image: PdfImage, mask: number | null): string {
@@ -1336,7 +1375,14 @@ function writeXref(objects: string[], infoId: number): string {
 function assemble(layout: Layout, title: string): string {
   const pageCount = layout.pages.length;
   const objects: string[] = [];
-  const fontKeys = Object.keys(FONT_NAMES) as FontKey[];
+  const japanese = new Map<JapaneseFontKey, JapanesePdfFont>();
+  for (const page of layout.pages) for (const item of page) {
+    if (item.kind !== "text") continue;
+    for (const piece of item.pieces) if (isJapaneseFont(piece.font) && !japanese.has(piece.font)) {
+      japanese.set(piece.font, new JapanesePdfFont(piece.font));
+    }
+  }
+  const fontKeys: FontKey[] = [...Object.keys(FONT_NAMES) as StandardFontKey[], ...japanese.keys()];
   const infoId = 3 + fontKeys.length;
   const firstPage = infoId + 1;
   const { imageIds, maskIds } = assignImageIds(layout.images, firstPage + pageCount * 2);
@@ -1344,11 +1390,13 @@ function assemble(layout: Layout, title: string): string {
   const kids = layout.pages.map((_, index) => `${firstPage + index * 2} 0 R`).join(" ");
   objects[2] = `<< /Type /Pages /Kids [${kids}] /Count ${pageCount} >>`;
   fontKeys.forEach((key, index) => {
-    objects[3 + index] = fontObject(key);
+    objects[3 + index] = isJapaneseFont(key) ? "" : fontObject(key);
   });
-  objects[infoId] = `<< /Title ${pdfString(encode(title))} /Producer (Bookwriter) >>`;
-  writePages(objects, layout.pages, fontKeys, imageIds, firstPage);
+  const titleString = /^[\x20-\x7e]*$/.test(title) ? pdfString(encode(title)) : `<FEFF${unicodeHex(title)}>`;
+  objects[infoId] = `<< /Title ${titleString} /Producer (Bookwriter) >>`;
+  writePages(objects, layout.pages, fontKeys, imageIds, firstPage, japanese);
   writeImages(objects, layout.images, imageIds, maskIds);
+  for (const [key, font] of japanese) font.write(objects, 3 + fontKeys.indexOf(key));
   return writeXref(objects, infoId);
 }
 
@@ -1391,9 +1439,8 @@ function parseGroups(groups: string[]): MdToken[] {
 }
 
 function noteUnshown(markdown: string, warnings: string[]): void {
-  if (hasUnshownCharacter(markdown)) {
-    warnings.push("Some characters cannot be shown in the PDF and were replaced with ?.");
-  }
+  const missing = missingCharacters(markdown);
+  if (missing.length) warnings.push(`PDF font has no glyph for ${missing.join(", ")}. Shown as [U+XXXX] markers.`);
 }
 
 function mergeWarnings(rendered: PdfResult, warnings: string[]): PdfResult {

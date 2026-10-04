@@ -25,7 +25,6 @@ import {
 import { COMMANDS, applyCommand, latestLanguage, type CommandId, type MarkupCommand } from "../ui/commands";
 import { exportBook, exportDocxFiles } from "../export/export";
 import { nextMatch, previousMatch, type FindHit, type FindPart } from "../ui/find";
-import { exportPdfWithPictures } from "../export/pdf";
 import { rasterizePicture } from "../ui/rasterize";
 import { formatAccelerator } from "../ui/keys";
 import { blockAtLine, lineOffset, offsetFraction, scrollToSpot, sourceOffset } from "../ui/locate";
@@ -1481,6 +1480,7 @@ async function safePdfExport(): Promise<void> {
 }
 
 async function writePdfFile(destination: string): Promise<void> {
+  const { exportPdfWithPictures } = await import("../export/pdf");
   const result = await exportPdfWithPictures(manuscriptNodes(book!.nodes), book!.title, fs, book!.root, { rasterize: rasterizePicture });
   await fs.writeText(destination, result.pdf);
   showWarnings(result.warnings);
